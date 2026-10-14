@@ -1,0 +1,63 @@
+name: wagering-processor
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: wagering
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d wagering"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  localstack:
+    image: localstack/localstack:3
+    environment:
+      SERVICES: sqs
+      AWS_DEFAULT_REGION: us-east-1
+    ports: ["4566:4566"]
+    volumes:
+      - ./infra/localstack/init-sqs.sh:/etc/localstack/init/ready.d/init-sqs.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "awslocal sqs get-queue-url --queue-name wager-transactions.fifo"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+  migrate:
+    image: oven/bun:1
+    working_dir: /app
+    volumes: [".:/app"]
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/wagering
+    command: ["sh", "-c", "bun install && bun run migration:up"]
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  # Três instâncias por padrão: a correção com múltiplas instâncias é requisito.
+  app:
+    image: oven/bun:1
+    working_dir: /app
+    volumes: [".:/app"]
+    command: ["bun", "run", "src/main.ts"]
+    environment:
+      PORT: "3000"
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/wagering
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      SQS_ENDPOINT: http://localstack:4566
+      SQS_WAGER_QUEUE_URL: http://localstack:4566/000000000000/wager-transactions.fifo
+      SQS_EVENTS_QUEUE_URL: http://localstack:4566/000000000000/wagering-events.fifo
+      LOG_LEVEL: info
+    deploy:
+      replicas: 3
+    ports: ["3000-3002:3000"]
+    stop_grace_period: 30s
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      localstack: { condition: service_healthy }
