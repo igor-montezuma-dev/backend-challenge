@@ -35,6 +35,11 @@
             "introspection.token.claim": "true"
           }
         }
+      ],
+      "webOrigins": [
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://localhost:3002"
       ]
     },
     {
@@ -67,6 +72,11 @@
             "introspection.token.claim": "true"
           }
         }
+      ],
+      "webOrigins": [
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://localhost:3002"
       ]
     },
     {

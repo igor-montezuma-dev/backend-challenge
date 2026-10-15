@@ -3,8 +3,8 @@ import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 export class MoneyDoc {
   @ApiProperty({
     example: "25.00",
-    pattern: "^(0|[1-9]\\d{0,16})(\\.\\d{1,2})?$",
-    description: "Decimal em string, até 2 casas. Nunca number. Sem sinal, sem notação científica.",
+    pattern: "^(0|[1-9]\\d{0,16})\\.\\d{2}$",
+    description: "Decimal em string com exatamente 2 casas (\"25.00\"). Nunca number. Sem sinal, sem notação científica.",
   })
   amount!: string;
 

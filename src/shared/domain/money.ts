@@ -1,4 +1,5 @@
 import { DomainError, ValidationError } from "./domain-error";
+import { Guard } from "./guard";
 
 export interface MoneyProps {
   amount: string;
@@ -22,13 +23,15 @@ export class CurrencyMismatchError extends DomainError {
   }
 }
 
+const MONEY_FIELDS = ["amount", "currency"] as const;
+
 export class Money {
   static readonly SCALE = 2;
   private static readonly FACTOR = 100n;
 
   static readonly MAX_MINOR_UNITS = 10n ** 19n - 1n;
 
-  private static readonly AMOUNT_PATTERN = /^(0|[1-9]\d{0,16})(?:\.(\d{1,2}))?$/;
+  private static readonly AMOUNT_PATTERN = /^(0|[1-9]\d{0,16})\.(\d{2})$/;
   private static readonly CURRENCY_PATTERN = /^[A-Z]{3}$/;
 
   private constructor(
@@ -40,6 +43,7 @@ export class Money {
     if (props === null || typeof props !== "object") {
       throw new InvalidMoneyError("money must be an object { amount, currency }");
     }
+    Guard.knownFields(props as unknown as Record<string, unknown>, MONEY_FIELDS, "money");
     const currency = Money.parseCurrency(props.currency);
     const { amount } = props;
     if (typeof amount !== "string") {
@@ -48,12 +52,10 @@ export class Money {
     const match = Money.AMOUNT_PATTERN.exec(amount);
     if (!match) {
       throw new InvalidMoneyError(
-        `invalid amount "${amount}": expected a non-negative decimal with at most 2 decimal places`,
+        `invalid amount "${amount}": expected a non-negative decimal with exactly 2 decimal places, e.g. "25.00"`,
       );
     }
-    const integerPart = match[1] ?? "0";
-    const fractionPart = (match[2] ?? "").padEnd(Money.SCALE, "0");
-    return new Money(BigInt(integerPart + fractionPart), currency);
+    return new Money(BigInt(`${match[1]}${match[2]}`), currency);
   }
 
   static zero(currency: string): Money {

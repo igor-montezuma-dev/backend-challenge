@@ -81,8 +81,23 @@ export class ApiErrorFilter implements ExceptionFilter {
         },
       };
     }
+    const rejected = clientRequestError(exception);
+    if (rejected) return rejected;
     return internal();
   }
+}
+
+function clientRequestError(exception: unknown) {
+  const { status, expose } = (exception ?? {}) as { status?: unknown; expose?: unknown };
+  if (typeof status !== "number" || status < 400 || status >= 500 || expose !== true) return undefined;
+  return {
+    status,
+    body: {
+      code: status === HttpStatus.BAD_REQUEST ? "MALFORMED_REQUEST" : HttpStatus[status] ?? "HTTP_ERROR",
+      message: (exception as Error).message,
+      retryable: false,
+    },
+  };
 }
 
 function internal() {

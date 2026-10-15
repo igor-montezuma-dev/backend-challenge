@@ -1,14 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { CurrencyMismatchError, InvalidMoneyError, Money } from "../../src/shared/domain/money";
+import { ValidationError } from "../../src/shared/domain/domain-error";
 
 const brl = (amount: string) => Money.from({ amount, currency: "BRL" });
 
 describe("Money.from — entradas válidas e escala fixa", () => {
   test.each([
     ["25.00", "25.00"],
-    ["25.5", "25.50"],
-    ["25", "25.00"],
-    ["0", "0.00"],
+    ["0.00", "0.00"],
     ["0.01", "0.01"],
     ["0.10", "0.10"],
     ["99999999999999999.99", "99999999999999999.99"],
@@ -17,9 +16,9 @@ describe("Money.from — entradas válidas e escala fixa", () => {
   });
 
   test("serializa no formato do contrato", () => {
-    expect(brl("25").toJSON()).toEqual({ amount: "25.00", currency: "BRL" });
-    expect(JSON.stringify({ m: brl("1.5") })).toBe('{"m":{"amount":"1.50","currency":"BRL"}}');
-    expect(brl("1.5").toString()).toBe("1.50 BRL");
+    expect(brl("25.00").toJSON()).toEqual({ amount: "25.00", currency: "BRL" });
+    expect(JSON.stringify({ m: brl("1.50") })).toBe('{"m":{"amount":"1.50","currency":"BRL"}}');
+    expect(brl("1.50").toString()).toBe("1.50 BRL");
   });
 });
 
@@ -31,6 +30,9 @@ describe("Money.from — entradas inválidas", () => {
     ["-Infinity", "-Infinity"],
     ["notação científica", "1e3"],
     ["notação científica com ponto", "2.5E1"],
+    ["sem casas decimais", "25"],
+    ["zero sem casas decimais", "0"],
+    ["uma casa decimal", "25.5"],
     ["mais de 2 casas", "10.001"],
     ["mais de 2 casas com zeros", "10.000"],
     ["negativo", "-1.00"],
@@ -54,6 +56,12 @@ describe("Money.from — entradas inválidas", () => {
     ["float", 0.1],
   ])("amount do tipo %s é rejeitado", (_label, amount) => {
     expect(() => Money.from({ amount: amount as unknown as string, currency: "BRL" })).toThrow(InvalidMoneyError);
+  });
+
+  test("campos além de amount e currency são rejeitados", () => {
+    const withExtra = { amount: "1.00", currency: "BRL", scale: 2 } as unknown as { amount: string; currency: string };
+    expect(() => Money.from(withExtra)).toThrow(ValidationError);
+    expect(() => Money.from(withExtra)).toThrow('unknown field "money.scale"');
   });
 
   test.each(["brl", "BR", "BRLL", "", "R$"])("moeda inválida %p", (currency) => {
@@ -85,8 +93,8 @@ describe("Money — aritmética exata", () => {
   test("comparações", () => {
     expect(brl("79.99").isLessThan(brl("80.00"))).toBe(true);
     expect(brl("80.00").isLessThan(brl("80.00"))).toBe(false);
-    expect(brl("80").equals(brl("80.00"))).toBe(true);
-    expect(brl("80").equals(Money.from({ amount: "80", currency: "USD" }))).toBe(false);
+    expect(brl("80.00").equals(brl("80.00"))).toBe(true);
+    expect(brl("80.00").equals(Money.from({ amount: "80.00", currency: "USD" }))).toBe(false);
   });
 
   test("é imutável: operações retornam novas instâncias", () => {

@@ -2,7 +2,7 @@ import { Body, Controller, Get, Inject, Param, Post, Req, Res } from "@nestjs/co
 import {
   ApiAcceptedResponse,
   ApiBadRequestResponse,
-  ApiBearerAuth,
+  ApiOAuth2,
   ApiForbiddenResponse,
   ApiBody,
   ApiConflictResponse,
@@ -21,8 +21,10 @@ import type { Request, Response } from "express";
 import { CurrentProvider } from "../../../../auth/current-provider.decorator";
 import { Guard } from "../../../../shared/domain/guard";
 import { ApiErrorDoc } from "../../../../shared/infrastructure/http/openapi/common.docs";
+import { KEYCLOAK_SECURITY_SCHEME } from "../../../../shared/infrastructure/http/openapi/setup-openapi";
 import { CorrelationId } from "../../../../shared/infrastructure/http/request-context";
 import { ProviderMismatchError, TransactionNotFoundError } from "../../application/errors";
+import { WAGER_PAYLOAD_FIELDS } from "../../application/commands/submit-wager.command";
 import { TRANSACTION_READ_MODEL, type TransactionReadModel } from "../../application/ports/transaction-read-model.port";
 import { ProcessWagerTransaction } from "../../application/use-cases/process-wager-transaction.use-case";
 import { FIELD_LIMITS } from "../../domain/transaction/wager-transaction";
@@ -33,7 +35,7 @@ import { TransactionPresenter } from "./transaction.presenter";
 const IDEMPOTENCY_KEY_HEADER = "Idempotency-Key";
 
 @ApiTags("wagering")
-@ApiBearerAuth()
+@ApiOAuth2([], KEYCLOAK_SECURITY_SCHEME)
 @ApiUnauthorizedResponse({ type: ApiErrorDoc, description: "Token ausente, inválido ou expirado" })
 @ApiServiceUnavailableResponse({
   type: ApiErrorDoc,
@@ -81,7 +83,7 @@ export class WagerTransactionsController {
   ) {
     const idempotencyKey = Guard.text(request.header(IDEMPOTENCY_KEY_HEADER), IDEMPOTENCY_KEY_HEADER, FIELD_LIMITS.idempotencyKey);
     const result = await this.processWager.execute(
-      { ...Guard.object(body), idempotencyKey },
+      { ...Guard.knownFields(Guard.object(body), WAGER_PAYLOAD_FIELDS), idempotencyKey },
       { correlationId, causationId: idempotencyKey, ...(actingProviderId !== undefined ? { actingProviderId } : {}) },
     );
     response.status(TransactionPresenter.httpStatus(result));

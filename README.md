@@ -40,16 +40,20 @@ O compose sobe, nesta ordem:
 
 Com tudo `healthy`:
 
-- Swagger: <http://localhost:3000/docs>
+- Swagger (documentação e testes da API): <http://localhost:3000/docs>
 - Liveness: <http://localhost:3000/health/live>
 - Readiness (PostgreSQL e SQS): <http://localhost:3000/health/ready>
 - Métricas Prometheus: <http://localhost:3000/metrics>
 
 Para parar e apagar os dados: `docker compose down -v`.
 
-## Autenticação
+## Testando pelo Swagger
 
-Com o compose, as rotas de wallets e transações exigem um token do Keycloak (health, métricas e `/docs` são públicos). Cada provedor de jogos é um *client* OAuth2 com o fluxo **client credentials**:
+A API inteira pode ser exercitada pelo navegador, sem linha de comando. Abra **<http://localhost:3000/docs>** (as instâncias `3001` e `3002` servem a mesma documentação).
+
+### 1. Autenticar
+
+As rotas de wallets e transações exigem um token do Keycloak; health, métricas e a documentação são públicos. Cada provedor de jogos é um *client* OAuth2 (fluxo **client credentials**):
 
 | client_id | client_secret | Uso |
 |---|---|---|
@@ -57,21 +61,24 @@ Com o compose, as rotas de wallets e transações exigem um token do Keycloak (h
 | `provider-b` | `provider-b-secret` | segundo provedor, para testar o isolamento |
 | `load-provider` | `load-provider-secret` | teste de carga |
 
-Obter um token (válido por 15 minutos):
+Clique em **Authorize**, preencha `client_id` e `client_secret` no bloco **keycloak (OAuth2, clientCredentials)** e confirme em **Authorize** → **Close**. O Swagger obtém o token no Keycloak e o envia em todas as chamadas seguintes; não é preciso copiar token.
 
-```bash
-curl -s -X POST http://localhost:8080/realms/wagering/protocol/openid-connect/token \
-  -d grant_type=client_credentials -d client_id=provider-a -d client_secret=provider-a-secret
-```
+### 2. Roteiro sugerido
 
-No PowerShell:
+| # | Endpoint | O que fazer | Resultado esperado |
+|---|---|---|---|
+| 1 | `POST /wallets` | **Execute** com o exemplo (troque o `playerId` por outro UUID se repetir) e anote `id` e `playerId` | `201`, saldo `1000.00`, `version: 1` |
+| 2 | `POST /wagering/transactions` | escolha o exemplo **BET de 25.00**, troque `walletId` e `playerId` pelos da wallet e use `Idempotency-Key: provider-a:transaction-123` | `201`, `PROCESSED`, saldo `975.00` |
+| 3 | o mesmo | **Execute** de novo, sem mudar nada | `200`, `idempotentReplay: true`, mesmo `transactionId` e saldo |
+| 4 | o mesmo | mude o `amount` mantendo a mesma `Idempotency-Key` | `409 IDEMPOTENCY_KEY_CONFLICT` |
+| 5 | o mesmo | exemplo **REFUND da BET**, com `Idempotency-Key: provider-a:transaction-126` | `201`, saldo volta a `1000.00` |
+| 6 | o mesmo | exemplo **ROLLBACK da BET** (`provider-a:transaction-127`) | `422 ALREADY_REVERSED` (reversão única) |
+| 7 | o mesmo | um REFUND cujo `referenceExternalTransactionId` ainda não existe | `202 PENDING_REFERENCE` |
+| 8 | `GET /wallets/{walletId}/ledger` | consultar o extrato | lançamentos imutáveis, com cursor de paginação |
+| 9 | `POST /wallets/{walletId}/reconciliation` | reconciliar saldo × ledger | `consistent: true` |
+| 10 | **Authorize** → **Logout** → autentique como `provider-b` | repita uma transação com `providerId: provider-a` | `403 PROVIDER_MISMATCH` |
 
-```powershell
-$token = (Invoke-RestMethod -Method Post -Uri http://localhost:8080/realms/wagering/protocol/openid-connect/token `
-  -Body @{ grant_type = "client_credentials"; client_id = "provider-a"; client_secret = "provider-a-secret" }).access_token
-```
-
-No Swagger (`/docs`), clique em **Authorize** e cole o `access_token`. Roteiro rápido para conferir: `POST /wallets` sem token → 401; com token → wallet criada; `POST /wagering/transactions` com o `walletId`/`playerId` dela → 201; a mesma requisição de novo → 200 com `idempotentReplay: true`. O provedor do token precisa ser o mesmo `providerId` do corpo: `provider-b` submetendo uma transação de `provider-a` recebe `403 PROVIDER_MISMATCH`. Para rodar sem autenticação, use `AUTH_MODE=disabled`.
+O significado de cada status e de cada `failureCode` está descrito na própria página do Swagger. Para rodar sem autenticação, use `AUTH_MODE=disabled`.
 
 ## Rodar localmente (fora do container)
 
@@ -163,9 +170,12 @@ Parâmetros por variável de ambiente:
 
 O relatório (JSON) traz ambiente, throughput, p50/p95/p99 por tipo, distribuição de status, taxa de erro, retries, conflitos de lock, pico de lag da outbox, tempo de drenagem, eventos entregues ao consumidor e a reconciliação de todas as wallets. O processo sai com código 1 se alguma wallet divergir do ledger ou surgir um status inesperado. Metodologia e resultados medidos estão em [ARCHITECTURE.md › Teste de carga](./ARCHITECTURE.md#14-teste-de-carga).
 
-## Exemplos de uso
+## Alternativa: linha de comando
 
-Os exemplos em bash usam [`jq`](https://jqlang.github.io/jq/) para extrair o token.
+<details>
+<summary>Token, chamadas HTTP e envio para a fila sem o Swagger</summary>
+
+Obter um token (válido por 15 minutos) e chamar a API, em bash (usa [`jq`](https://jqlang.github.io/jq/)):
 
 ```bash
 TOKEN=$(curl -s -X POST http://localhost:8080/realms/wagering/protocol/openid-connect/token \
@@ -174,16 +184,16 @@ TOKEN=$(curl -s -X POST http://localhost:8080/realms/wagering/protocol/openid-co
 curl -s -X POST localhost:3000/wallets \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   -d '{"playerId":"0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1","initialBalance":{"amount":"1000.00","currency":"BRL"}}'
-
-curl -s -X POST localhost:3000/wagering/transactions \
-  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
-  -H 'Idempotency-Key: provider-a:transaction-123' \
-  -d '{"providerId":"provider-a","externalTransactionId":"transaction-123","playerId":"0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1","walletId":"<id da wallet>","roundId":"round-987","gameId":"fortune-chimp","kind":"BET","money":{"amount":"25.00","currency":"BRL"}}'
 ```
 
-No PowerShell, prefira o Swagger (`/docs`) ou `Invoke-RestMethod`, porque o `curl` do Windows trata aspas de forma diferente.
+No PowerShell:
 
-Publicar uma transação pela fila (LocalStack; credenciais fictícias):
+```powershell
+$token = (Invoke-RestMethod -Method Post -Uri http://localhost:8080/realms/wagering/protocol/openid-connect/token `
+  -Body @{ grant_type = "client_credentials"; client_id = "provider-a"; client_secret = "provider-a-secret" }).access_token
+```
+
+Publicar uma transação pela fila (o Swagger não cobre SQS; credenciais fictícias do LocalStack):
 
 ```bash
 AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_DEFAULT_REGION=us-east-1 \
@@ -192,6 +202,8 @@ aws --endpoint-url http://localhost:4566 sqs send-message \
   --message-group-id <walletId> --message-deduplication-id msg-123 \
   --message-body '{"messageId":"msg-123","type":"WagerTransactionRequested","occurredAt":"2026-07-29T15:00:00.000Z","data":{ ... }}'
 ```
+
+</details>
 
 ## Configuração
 

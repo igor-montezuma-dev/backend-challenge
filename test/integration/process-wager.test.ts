@@ -159,12 +159,23 @@ describe("idempotência persistente", () => {
     );
   });
 
-  test("hash ignora a forma do amount: \"30\" é replay de \"30.00\"", async () => {
+  test("amount fora da escala fixa de 2 casas é payload inválido, não replay", async () => {
     const w = await newWallet(h, "100.00");
     const payload = wagerPayload({ ...w, kind: "BET", amount: "30.00" });
     await h.processWager.execute(payload, http());
-    const r = await h.processWager.execute({ ...payload, money: { amount: "30", currency: "BRL" } }, http());
-    expect(r.idempotentReplay).toBe(true);
+    for (const amount of ["30", "30.0"]) {
+      await expect(h.processWager.execute({ ...payload, money: { amount, currency: "BRL" } }, http())).rejects.toBeInstanceOf(
+        ValidationError,
+      );
+    }
+  });
+
+  test("campo desconhecido no payload é rejeitado antes de qualquer escrita", async () => {
+    const w = await newWallet(h, "100.00");
+    const payload = { ...wagerPayload({ ...w, kind: "BET", amount: "30.00" }), bonus: "1000.00" };
+    await expect(h.processWager.execute(payload, http())).rejects.toThrow('unknown field "bonus"');
+    const [row] = (await h.sql`SELECT count(*)::int AS n FROM wager_transactions WHERE wallet_id = ${w.walletId} AND kind <> 'OPENING'`) as { n: number }[];
+    expect(row!.n).toBe(0);
   });
 });
 

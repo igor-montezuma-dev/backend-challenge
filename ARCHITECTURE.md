@@ -99,8 +99,9 @@ Há uma separação leve de leitura e escrita: comandos passam por casos de uso 
 
 - **No domínio**: `Money` guarda o valor como `bigint` em unidades mínimas (centavos) e a moeda ISO-4217. Toda operação devolve uma nova instância; operações entre moedas diferentes lançam `CurrencyMismatchError`.
 - **Por que `bigint` e não `decimal.js`**: com escala fixa de 2 casas, a soma e a subtração em inteiros são exatas e não há divisão nem arredondamento no domínio. `bigint` é nativo, não tem dependência e não permite misturar acidentalmente com `number` (o TypeScript recusa `bigint + number`). Uma biblioteca decimal faria sentido se houvesse câmbio, juros ou rateio.
-- **Validação da entrada** (`Money.from`): aceita apenas `^(0|[1-9]\d{0,16})(\.\d{1,2})?$`. Rejeita string vazia, `NaN`, `Infinity`, notação científica, sinal, zeros à esquerda e mais de 2 casas. Valores negativos não existem no contrato de entrada.
-- **Serialização**: sempre string com 2 casas (`"25.5"` entra, `"25.50"` sai).
+- **Validação da entrada** (`Money.from`): aceita apenas `^(0|[1-9]\d{0,16})\.\d{2}$`, ou seja, **escala fixa de exatamente 2 casas** na entrada e na saída. Rejeita string vazia, `NaN`, `Infinity`, notação científica, sinal, zeros à esquerda, `"25"`, `"25.5"` e mais de 2 casas. Valores negativos não existem no contrato de entrada. `money` aceita somente `amount` e `currency`.
+- **Por que exigir as 2 casas na entrada**: o formato do valor é parte do contrato financeiro. Aceitar `"25"` obrigaria a normalizar antes do hash de idempotência e abriria espaço para dois provedores interpretarem o mesmo campo de formas diferentes. Com a escala fixa, a string recebida é a mesma que é persistida, publicada e usada no hash.
+- **Serialização**: sempre string com 2 casas (`"25.00"`).
 - **Persistência**: `numeric(19,2)` no PostgreSQL, mapeado por um tipo customizado (`NumericStringType`) que troca strings com o driver. O valor nunca passa por `number` em nenhuma camada.
 - **Multi-moeda**: o modelo é multi-moeda (wallet tem moeda; FKs compostas garantem que ledger e transação usam a moeda da wallet). Os cenários usam BRL; conflitos de moeda são testados.
 
@@ -240,7 +241,7 @@ Cenário obrigatório (100.00 com duas apostas de 80.00) e variações (mesma ap
 
 - **Fonte da verdade**: o header `Idempotency-Key` no HTTP e `data.idempotencyKey` na fila; padrão recomendado `{providerId}:{externalTransactionId}`.
 - **Persistente**: a chave é coluna única de `wager_transactions`. Não há cache em memória.
-- **payloadHash**: SHA-256 (hex) do **JSON canônico** do subconjunto de negócio: `providerId`, `externalTransactionId`, `playerId`, `walletId`, `roundId`, `gameId`, `kind`, `money {amount, currency}` e `referenceExternalTransactionId`. JSON canônico = chaves ordenadas lexicograficamente em todos os níveis, sem espaços, campos `undefined` omitidos, `amount` normalizado para 2 casas (então `"25"` e `"25.00"` geram o mesmo hash). A chave de idempotência, headers e metadados de transporte não entram.
+- **payloadHash**: SHA-256 (hex) do **JSON canônico** do subconjunto de negócio: `providerId`, `externalTransactionId`, `playerId`, `walletId`, `roundId`, `gameId`, `kind`, `money {amount, currency}` e `referenceExternalTransactionId`. JSON canônico = chaves ordenadas lexicograficamente em todos os níveis, sem espaços, campos `undefined` omitidos, `amount` já chega na forma canônica de 2 casas, porque outra forma é recusada na validação. A chave de idempotência, headers e metadados de transporte não entram.
 - **Mesma chave, mesmo hash** → resultado original com `idempotentReplay: true` (HTTP 200 para PROCESSED; a mesma resposta 202 ou 422 para os outros estados).
 - **Mesma chave, hash diferente** → `409 IDEMPOTENCY_KEY_CONFLICT`. Nunca é replay.
 - **Mesmo `(providerId, externalTransactionId)` com outra chave** → `409 EXTERNAL_TRANSACTION_ID_CONFLICT`.
@@ -261,6 +262,8 @@ Cenário obrigatório (100.00 com duas apostas de 80.00) e variações (mesma ap
 | Conflito de idempotência ou de id externo; wallet duplicada | `409` | `IDEMPOTENCY_KEY_CONFLICT`, `EXTERNAL_TRANSACTION_ID_CONFLICT`, `WALLET_ALREADY_EXISTS` |
 | Falha transitória (banco fora, lock timeout) | `503` + `Retry-After` | `TRANSIENT_INFRASTRUCTURE_ERROR`, `retryable: true` |
 | Erro inesperado | `500` | `INTERNAL_ERROR` |
+
+**Contrato fechado**: campos fora do contrato são recusados com `400 VALIDATION_ERROR` e `field` apontando o campo (por exemplo `bonus` ou `money.fee`), tanto no HTTP quanto em `data` da fila (onde vira erro permanente e vai para a DLQ). Num serviço financeiro, um campo ignorado em silêncio é um erro de integração escondido: o provedor acredita que enviou uma informação que não teve efeito. A recusa explícita também mantém o `payloadHash` honesto, já que o hash cobre exatamente os campos aceitos. No HTTP, `idempotencyKey` no corpo também é recusado: a fonte da verdade é o header. Evoluções do contrato entram como nova versão do campo ou do endpoint, não como campo tolerado.
 
 A regra para o provedor: **2xx** = resultado registrado; **422** = registrado e terminal, não reenviar igual; **4xx** = corrigir o payload; **503** = reenviar a mesma requisição, o que é seguro pela idempotência. A rejeição de negócio é 422 e não 409/400 porque a requisição era válida e foi registrada: o replay devolve o mesmo 422.
 
@@ -457,6 +460,7 @@ Autenticar não basta: um provedor válido não pode submeter transações em no
 - O realm `wagering` é importado na subida (`infra/keycloak/wagering-realm.json`) com os clients `provider-a`, `provider-b` e `load-provider`. Cada client tem só *service account* habilitado (sem login de usuário) e um mapper que coloca `wagering-processor` no `aud`.
 - `KC_HOSTNAME=http://localhost:8080` fixa o emissor do token, quem quer que o peça; `KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true` deixa as instâncias buscarem o JWKS pela rede interna (`http://keycloak:8080/...`). Sem isso, um token pedido pelo host teria `iss` diferente do esperado dentro do container.
 - As instâncias só sobem depois do health check do Keycloak.
+- **Swagger**: o botão **Authorize** usa o mesmo fluxo client credentials direto no Keycloak (esquema OAuth2 publicado no OpenAPI quando `AUTH_MODE=jwt`). Para o navegador poder chamar o Keycloak, os clients `provider-a` e `provider-b` aceitam CORS apenas das origens do Swagger (`localhost:3000`–`3002`).
 
 ### Escopo e decisões
 

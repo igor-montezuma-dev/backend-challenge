@@ -151,6 +151,24 @@ describe("POST /wallets", () => {
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe("MALFORMED_REQUEST");
   });
+
+  test("corpo grande demais ou com encoding não suportado é erro do cliente (4xx), não 500", async () => {
+    const tooLarge = await fetch(`${base}/wallets`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ padding: "x".repeat(2_000_000) }),
+    });
+    expect(tooLarge.status).toBe(413);
+    expect(((await tooLarge.json()) as { error: unknown }).error).toMatchObject({ code: "PAYLOAD_TOO_LARGE", retryable: false });
+
+    const encoding = await fetch(`${base}/wallets`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "content-encoding": "unknown" },
+      body: "{}",
+    });
+    expect(encoding.status).toBe(415);
+    expect(((await encoding.json()) as { error: { retryable: boolean } }).error.retryable).toBe(false);
+  });
 });
 
 describe("POST /wagering/transactions — mapeamento de status", () => {
@@ -212,11 +230,41 @@ describe("POST /wagering/transactions — mapeamento de status", () => {
     expect(missing.status).toBe(400);
     expect(missing.body.error).toMatchObject({ code: "VALIDATION_ERROR", field: "Idempotency-Key" });
 
-    const first = await call("POST", "/wagering/transactions", { ...op.body, idempotencyKey: "body-key-1" }, { "Idempotency-Key": op.key });
-    expect(first.status).toBe(201);
-    const again = await call("POST", "/wagering/transactions", { ...op.body, idempotencyKey: "body-key-2" }, { "Idempotency-Key": op.key });
-    expect(again.status).toBe(200);
-    expect(again.body.transactionId).toBe(first.body.transactionId);
+    const inBody = await call("POST", "/wagering/transactions", { ...op.body, idempotencyKey: "body-key" }, { "Idempotency-Key": op.key });
+    expect(inBody.status).toBe(400);
+    expect(inBody.body.error).toMatchObject({ code: "VALIDATION_ERROR", field: "idempotencyKey" });
+    expect((await submit(op)).status).toBe(201);
+  });
+
+  test("400 para campos fora do contrato, no corpo e dentro de money; nada é gravado", async () => {
+    const w = await createWallet("100.00");
+    const extraField = wager(w, "BET", "10.00", { bonus: "999.00" });
+    const top = await submit(extraField);
+    expect(top.status).toBe(400);
+    expect(top.body.error).toMatchObject({ code: "VALIDATION_ERROR", field: "bonus", retryable: false });
+
+    const nested = wager(w, "BET", "10.00");
+    const res = await call("POST", "/wagering/transactions", { ...nested.body, money: { amount: "10.00", currency: "BRL", fee: "1.00" } }, { "Idempotency-Key": nested.key });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatchObject({ code: "VALIDATION_ERROR", field: "money.fee" });
+
+    const wallet = await call("POST", "/wallets", { playerId: crypto.randomUUID(), initialBalance: { amount: "1.00", currency: "BRL" }, vip: true });
+    expect(wallet.status).toBe(400);
+    expect(wallet.body.error.field).toBe("vip");
+
+    expect((await call("GET", `/wallets/${w.walletId}`)).body.balance.amount).toBe("100.00");
+    expect((await call("GET", `/wallets/${w.walletId}/ledger`)).body.items).toHaveLength(1);
+  });
+
+  test("400 para amount fora da escala fixa de 2 casas", async () => {
+    const w = await createWallet("100.00");
+    for (const amount of ["10", "10.5", "10.000"]) {
+      const res = await submit(wager(w, "BET", amount));
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatchObject({ code: "VALIDATION_ERROR", field: "money" });
+    }
+    const wallet = await call("POST", "/wallets", { playerId: crypto.randomUUID(), initialBalance: { amount: "100", currency: "BRL" } });
+    expect(wallet.status).toBe(400);
   });
 
   test("400 payload inválido (kind OPENING, amount number, uuid inválido)", async () => {

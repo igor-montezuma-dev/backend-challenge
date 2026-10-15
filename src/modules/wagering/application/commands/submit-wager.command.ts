@@ -8,8 +8,22 @@ export interface SubmitWagerCommand extends WagerPayload {
   payloadHash: string;
 }
 
+export const WAGER_PAYLOAD_FIELDS = [
+  "providerId",
+  "externalTransactionId",
+  "playerId",
+  "walletId",
+  "roundId",
+  "gameId",
+  "kind",
+  "money",
+  "referenceExternalTransactionId",
+] as const satisfies readonly (keyof WagerPayload)[];
+
+const SUBMISSION_FIELDS = [...WAGER_PAYLOAD_FIELDS, "idempotencyKey"] as const;
+
 export function parseSubmitWagerCommand(input: unknown): SubmitWagerCommand {
-  const raw = Guard.object(input);
+  const raw = Guard.knownFields(Guard.object(input), SUBMISSION_FIELDS);
   const payload: WagerPayload = {
     providerId: Guard.text(raw.providerId, "providerId", FIELD_LIMITS.providerId),
     externalTransactionId: Guard.text(raw.externalTransactionId, "externalTransactionId", FIELD_LIMITS.externalTransactionId),

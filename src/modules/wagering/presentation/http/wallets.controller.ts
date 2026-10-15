@@ -10,12 +10,13 @@ import {
   ApiParam,
   ApiQuery,
   ApiServiceUnavailableResponse,
-  ApiBearerAuth,
+  ApiOAuth2,
   ApiTags,
   ApiUnauthorizedResponse,
 } from "@nestjs/swagger";
 import { Guard } from "../../../../shared/domain/guard";
 import { ApiErrorDoc } from "../../../../shared/infrastructure/http/openapi/common.docs";
+import { KEYCLOAK_SECURITY_SCHEME } from "../../../../shared/infrastructure/http/openapi/setup-openapi";
 import { CorrelationId } from "../../../../shared/infrastructure/http/request-context";
 import { WalletNotFoundError } from "../../application/errors";
 import { WALLET_READ_MODEL, type WalletReadModel } from "../../application/ports/wallet-read-model.port";
@@ -35,7 +36,7 @@ import { WalletPresenter } from "./wallet.presenter";
 const WALLET_ID_PARAM = { name: "walletId", format: "uuid", example: WALLET_ID_EXAMPLE } as const;
 
 @ApiTags("wallets")
-@ApiBearerAuth()
+@ApiOAuth2([], KEYCLOAK_SECURITY_SCHEME)
 @ApiUnauthorizedResponse({ type: ApiErrorDoc, description: "Token ausente, inválido ou expirado" })
 @ApiServiceUnavailableResponse({ type: ApiErrorDoc, description: "PostgreSQL indisponível — reenviar é seguro" })
 @Controller("wallets")

@@ -173,9 +173,9 @@ describe("WagerTransaction — direção do lançamento", () => {
 });
 
 describe("idempotência — hash do payload", () => {
-  test("mesmo payload → mesmo hash, independente da ordem e da forma do amount", () => {
-    const a = wagerProps(Kind.Bet, "25", { externalTransactionId: "t-1" });
-    const b = { ...a, money: Money.from({ amount: "25.00", currency: "BRL" }) };
+  test("mesmo payload → mesmo hash, independente da ordem das chaves", () => {
+    const a = wagerProps(Kind.Bet, "25.00", { externalTransactionId: "t-1" });
+    const b = Object.fromEntries(Object.entries(a).reverse()) as typeof a;
     expect(wagerPayloadHash(a)).toBe(wagerPayloadHash(b));
     expect(wagerPayloadHash(a)).toMatch(/^[0-9a-f]{64}$/);
   });

@@ -175,8 +175,13 @@ describe("autenticação JWT (AUTH_MODE=jwt)", () => {
     expect(foreign.body.error.code).toBe("PROVIDER_MISMATCH");
   });
 
-  test("OpenAPI declara o esquema bearer", async () => {
+  test("OpenAPI declara apenas o fluxo OAuth2 client credentials do Keycloak para o Authorize do Swagger", async () => {
     const doc = (await call("GET", "/docs/openapi.json")).body;
-    expect(doc.components.securitySchemes.bearer).toMatchObject({ type: "http", scheme: "bearer" });
+    expect(Object.keys(doc.components.securitySchemes)).toEqual(["keycloak"]);
+    expect(doc.components.securitySchemes.keycloak).toMatchObject({
+      type: "oauth2",
+      flows: { clientCredentials: { tokenUrl: `${ISSUER}/protocol/openid-connect/token` } },
+    });
+    expect(doc.paths["/wagering/transactions"].post.security).toEqual([{ keycloak: [] }]);
   });
 });

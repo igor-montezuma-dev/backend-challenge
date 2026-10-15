@@ -10,6 +10,15 @@ export const Guard = {
     return value as Record<string, unknown>;
   },
 
+  knownFields(value: Record<string, unknown>, allowed: readonly string[], scope?: string): Record<string, unknown> {
+    const unknown = Object.keys(value).find((key) => !allowed.includes(key));
+    if (unknown !== undefined) {
+      const field = scope === undefined ? unknown : `${scope}.${unknown}`;
+      throw new ValidationError(`unknown field "${field}"; accepted fields: ${allowed.join(", ")}`, field);
+    }
+    return value;
+  },
+
   text(value: unknown, field: string, maxLength: number): string {
     if (typeof value !== "string" || value.trim() === "" || value.length > maxLength) {
       throw new ValidationError(`${field} must be a non-empty string up to ${maxLength} characters`, field);
