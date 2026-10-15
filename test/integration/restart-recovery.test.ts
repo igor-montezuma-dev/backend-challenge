@@ -8,6 +8,7 @@ const WALLETS = 6;
 const INITIAL_BALANCE = "1000.00";
 const EXPECTED_BALANCE = "995.00";
 const ROOT = join(import.meta.dir, "..", "..");
+const POSIX_SIGNALS = process.platform !== "win32";
 
 let h: Harness;
 let queues: TestQueues;
@@ -99,16 +100,6 @@ describe("reinício do serviço no meio da carga", () => {
     const final = await eventually(done, (s) => s.settled === messages && s.unpublished === 0, 60_000);
     expect(final).toEqual({ settled: messages, unpublished: 0 });
 
-    survivor.kill("SIGTERM");
-    await survivor.exited;
-    const logs = (await survivorLogs)
-      .split("\n")
-      .filter((line) => line.startsWith("{"))
-      .map((line) => JSON.parse(line) as { level: string; msg: string; context?: string });
-    for (const worker of ["WagerQueueConsumer", "OutboxRelay", "PendingReferenceSweeper"]) {
-      expect(logs.some((l) => l.context === worker && l.msg === `${worker} stopped`)).toBe(true);
-    }
-
     expect(await wagerCount()).toBe(messages);
     expect(await scalar(h.sql`SELECT count(*)::int AS n FROM inbox_messages`)).toBe(messages);
     expect(await scalar(h.sql`SELECT count(*)::int AS n FROM wager_transactions WHERE status = 'PENDING_REFERENCE'`)).toBe(0);
@@ -127,5 +118,17 @@ describe("reinício do serviço no meio da carga", () => {
     const delivered = new Set((await drain(queues.client, queues.eventsQueueUrl)).map((m) => m.MessageAttributes?.eventId?.StringValue));
     expect([...outboxIds].filter((id) => !delivered.has(id))).toEqual([]);
     expect(await drain(queues.client, queues.deadLetterQueueUrl, 0)).toEqual([]);
+
+    survivor.kill("SIGTERM");
+    await survivor.exited;
+    if (POSIX_SIGNALS) {
+      const logs = (await survivorLogs)
+        .split("\n")
+        .filter((line) => line.startsWith("{"))
+        .map((line) => JSON.parse(line) as { level: string; msg: string; context?: string });
+      for (const worker of ["WagerQueueConsumer", "OutboxRelay", "PendingReferenceSweeper"]) {
+        expect(logs.some((l) => l.context === worker && l.msg === `${worker} stopped`)).toBe(true);
+      }
+    }
   }, 120_000);
 });
