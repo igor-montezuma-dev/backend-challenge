@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { CurrencyMismatchError, Money } from "../../src/shared/domain/money";
 import { ValidationError } from "../../src/shared/domain/domain-error";
-import { InsufficientFundsError, Wallet } from "../../src/modules/wallets/domain/wallet";
-import { LedgerDirection, WalletLedgerEntry } from "../../src/modules/wallets/domain/wallet-ledger-entry";
+import { InsufficientFundsError, Wallet } from "../../src/modules/wagering/domain/wallet/wallet";
+import { LedgerDirection, WalletLedgerEntry } from "../../src/modules/wagering/domain/wallet/wallet-ledger-entry";
 
 const brl = (amount: string) => Money.from({ amount, currency: "BRL" });
 const at = new Date("2026-10-13T12:00:00Z");
@@ -10,19 +10,19 @@ let seq = 0;
 const ref = () => ({ transactionId: `tx-${++seq}`, ledgerEntryId: `le-${seq}`, at });
 
 function open(balance: string): Wallet {
-  return Wallet.open({ id: "w-1", playerId: "p-1", initialBalance: brl(balance), opening: ref() }).wallet;
+  return Wallet.open({ id: "w-1", playerId: "p-1", initialBalance: brl(balance), opening: ref() });
 }
 
-/** Invariante final: saldo == soma dos lançamentos. */
 function replay(entries: WalletLedgerEntry[], currency = "BRL"): Money {
   return entries.reduce((acc, e) => acc.add(e.signedAmount()), Money.zero(currency));
 }
 
 describe("Wallet.open", () => {
   test("version 1 e lançamento de abertura quando saldo > 0", () => {
-    const { wallet, openingEntry } = Wallet.open({
+    const wallet = Wallet.open({
       id: "w-1", playerId: "p-1", initialBalance: brl("100.00"), opening: ref(),
     });
+    const [openingEntry] = wallet.pendingEntries;
     expect(wallet.version).toBe(1);
     expect(wallet.balance.amount).toBe("100.00");
     expect(wallet.currency).toBe("BRL");
@@ -34,17 +34,40 @@ describe("Wallet.open", () => {
   });
 
   test("saldo zero não gera lançamento", () => {
-    const { wallet, openingEntry } = Wallet.open({
+    const wallet = Wallet.open({
       id: "w-1", playerId: "p-1", initialBalance: Money.zero("BRL"), opening: ref(),
     });
+    const [openingEntry] = wallet.pendingEntries;
     expect(wallet.version).toBe(1);
     expect(openingEntry).toBeUndefined();
   });
 });
 
+describe("Wallet — lançamentos pendentes do aggregate", () => {
+  test("cada movimento fica pendente até o repositório persistir o aggregate", () => {
+    const wallet = Wallet.open({ id: "w-1", playerId: "p-1", initialBalance: brl("100.00"), opening: ref() });
+    wallet.debit(brl("10.00"), ref());
+    wallet.credit(brl("5.00"), ref());
+
+    expect(wallet.pendingEntries.map((e) => e.walletVersion)).toEqual([1, 2, 3]);
+    const pulled = wallet.pullPendingEntries();
+    expect(pulled).toHaveLength(3);
+    expect(wallet.pendingEntries).toHaveLength(0);
+    expect(replay(pulled).equals(wallet.balance)).toBe(true);
+  });
+
+  test("movimento recusado não deixa lançamento pendente", () => {
+    const wallet = open("10.00");
+    wallet.pullPendingEntries();
+    expect(() => wallet.debit(brl("10.01"), ref())).toThrow(InsufficientFundsError);
+    expect(wallet.pendingEntries).toHaveLength(0);
+  });
+});
+
 describe("Wallet — débito e crédito", () => {
   test("debit/credit movem saldo, incrementam version e devolvem o lançamento", () => {
-    const { wallet, openingEntry } = Wallet.open({ id: "w-1", playerId: "p-1", initialBalance: brl("100.00"), opening: ref() });
+    const wallet = Wallet.open({ id: "w-1", playerId: "p-1", initialBalance: brl("100.00"), opening: ref() });
+    const [openingEntry] = wallet.pendingEntries;
     const e1 = wallet.debit(brl("25.00"), ref());
     const e2 = wallet.credit(brl("40.50"), ref());
 

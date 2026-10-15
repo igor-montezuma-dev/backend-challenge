@@ -1,21 +1,12 @@
 import { SQL } from "bun";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { MIGRATION_FILES, readMigrationSql } from "../../src/shared/infrastructure/database/migrations";
 
-const MIGRATIONS_DIR = join(import.meta.dir, "../../src/database/migrations/sql");
-
-export const migrationSql = (name: string, direction: "up" | "down"): string =>
-  readFileSync(join(MIGRATIONS_DIR, `${name}.${direction}.sql`), "utf8");
-
-export const MIGRATIONS = ["0001_initial", "0002_outbox_position"] as const;
+export const migrationSql = readMigrationSql;
+export const MIGRATIONS = MIGRATION_FILES;
 
 const adminUrl = (): string =>
   process.env.TEST_DATABASE_ADMIN_URL ?? "postgres://postgres:postgres@localhost:5432/postgres";
 
-/**
- * Cria um banco isolado por arquivo de teste — os testes de integração rodam
- * contra PostgreSQL real, nunca contra mock.
- */
 export async function createTestDatabase(): Promise<{
   url: string;
   sql: SQL;
@@ -48,7 +39,6 @@ export async function migrateDown(sql: SQL): Promise<void> {
   for (const m of [...MIGRATIONS].reverse()) await sql.unsafe(migrationSql(m, "down"));
 }
 
-/** Executa `fn` e devolve o erro do PostgreSQL (SQLSTATE + constraint). */
 export async function pgError(fn: () => Promise<unknown>): Promise<{ code: string; constraint?: string; message: string }> {
   try {
     await fn();

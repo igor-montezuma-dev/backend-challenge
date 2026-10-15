@@ -1,13 +1,6 @@
-/**
- * Concorrência com paralelismo real: várias conexões PostgreSQL simultâneas
- * (Promise.all sobre um pool de 30) e, no final, 3 PROCESSOS independentes.
- * Nenhum teste é sequencial disfarçado.
- *
- * Invariante verificada em todos: wallet.balance == saldo reconstruído pelo ledger.
- */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import type { WagerResult } from "../../src/modules/wagering/application/process-wager-transaction.use-case";
+import type { WagerResult } from "../../src/modules/wagering/application/use-cases/process-wager-transaction.use-case";
 import { type Harness, createHarness, expectConsistent, http, newWallet, uniq, wagerPayload } from "../support/harness";
 
 let h: Harness;
@@ -50,7 +43,7 @@ describe("cenário obrigatório da seção 8", () => {
 
     expect(results).toHaveLength(20);
     const distinct = new Set(results.map((r) => r.transaction.id));
-    expect(distinct.size).toBe(2); // só duas transações existem
+    expect(distinct.size).toBe(2);
     expect(results.filter((r) => !r.idempotentReplay)).toHaveLength(2);
     expect(await expectConsistent(h.sql, w.walletId)).toMatchObject({ balance: "20.00", debits: 1 });
   });
@@ -84,8 +77,6 @@ describe("idempotência sob concorrência", () => {
   });
 
   test("mesma key com payloads diferentes em wallets diferentes, ao mesmo tempo → um vence, o outro é 409", async () => {
-    // Caminho da corrida em unique constraint: os dois travam wallets distintas,
-    // ninguém enxerga o outro até o INSERT. O banco decide; o perdedor repete e vê conflito.
     const w1 = await newWallet(h, "100.00");
     const w2 = await newWallet(h, "100.00");
     const key = uniq("shared-key");
@@ -125,7 +116,6 @@ describe("hot wallet", () => {
     );
     const results = fulfilled(await Promise.allSettled(ops));
     expect(results.every((r) => r.transaction.status === "PROCESSED")).toBe(true);
-    // 50 WIN e 50 BET de 3.33: saldo final igual ao inicial, 101 versões
     expect(await expectConsistent(h.sql, w.walletId)).toMatchObject({ balance: "500.00", version: 101 });
   });
 });
@@ -135,7 +125,6 @@ describe("wallets distintas em paralelo", () => {
     const a = await newWallet(h, "100.00");
     const b = await newWallet(h, "100.00");
 
-    // Uma transação externa segura o lock da wallet A.
     let release!: () => void;
     const released = new Promise<void>((r) => (release = r));
     let locked!: () => void;
@@ -148,9 +137,8 @@ describe("wallets distintas em paralelo", () => {
     await isLocked;
 
     const onB = await h.processWager.execute(wagerPayload({ ...b, kind: "BET", amount: "10.00" }), http());
-    expect<string | undefined>(onB.transaction.status).toBe("PROCESSED"); // não esperou o lock de A
+    expect<string | undefined>(onB.transaction.status).toBe("PROCESSED");
 
-    // A operação em A fica aguardando o lock e conclui quando ele é liberado.
     let finishedA = false;
     const onA = h.processWager.execute(wagerPayload({ ...a, kind: "BET", amount: "10.00" }), http()).then((r) => {
       finishedA = true;
@@ -177,7 +165,7 @@ describe("wallets distintas em paralelo", () => {
   });
 
   test("lock timeout vira erro transitório (503), sem efeito parcial", async () => {
-    const quick = await createHarness({ unitOfWork: { lockTimeoutMs: 200, maxAttempts: 1 } });
+    const quick = await createHarness({ settings: { lockTimeoutMs: 200, maxTransactionAttempts: 1 } });
     try {
       const w = await newWallet(quick, "100.00");
       let release!: () => void;
@@ -205,8 +193,6 @@ describe("wallets distintas em paralelo", () => {
 describe("múltiplas instâncias (processos independentes)", () => {
   test("3 processos disputando a mesma wallet, com operações duplicadas entre eles", async () => {
     const w = await newWallet(h, "100.00");
-    // 30 apostas distintas de 5.00 (total 150 > saldo 100). Cada processo recebe
-    // TODAS as 30 — simula redelivery: a mesma operação chegando em 3 instâncias.
     const operations = Array.from({ length: 30 }, () => wagerPayload({ ...w, kind: "BET", amount: "5.00" }));
     const startAt = Date.now() + 1_500;
 
@@ -233,14 +219,12 @@ describe("múltiplas instâncias (processos independentes)", () => {
     expect(all).toHaveLength(90);
     expect(all.every((r) => r.ok)).toBe(true);
 
-    // Cada operação gerou exatamente uma transação, vista igual pelas 3 instâncias.
     const byId = new Map<string, Set<string>>();
     for (const r of all) byId.set(r.id!, (byId.get(r.id!) ?? new Set()).add(r.status!));
     expect(byId.size).toBe(30);
     for (const statuses of byId.values()) expect(statuses.size).toBe(1);
     expect(all.filter((r) => !r.replay)).toHaveLength(30);
 
-    // 100.00 / 5.00 = 20 apostas aceitas, 10 rejeitadas, nunca negativo.
     const statuses = [...byId.values()].map((s) => [...s][0]);
     expect(statuses.filter((s) => s === "PROCESSED")).toHaveLength(20);
     expect(statuses.filter((s) => s === "REJECTED")).toHaveLength(10);

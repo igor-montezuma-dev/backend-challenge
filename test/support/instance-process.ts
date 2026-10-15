@@ -1,10 +1,3 @@
-/**
- * Processo filho que simula UMA instância da aplicação: seu próprio MikroORM,
- * seu próprio pool de conexões, sem memória compartilhada com as demais.
- *
- * Entrada (env JOB, JSON): { url, instance, operations: payload[] }
- * Saída (stdout, última linha): JSON com o resultado de cada operação.
- */
 import { SQL } from "bun";
 import { buildHarness } from "./harness";
 
@@ -12,7 +5,6 @@ interface Job {
   url: string;
   instance: string;
   operations: Record<string, unknown>[];
-  /** Todas as instâncias aguardam este instante para disparar juntas. */
   startAt: number;
 }
 

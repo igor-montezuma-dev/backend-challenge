@@ -1,16 +1,12 @@
-/**
- * Caso de uso ProcessWagerTransaction contra PostgreSQL real: regras,
- * idempotência persistente, inbox, outbox e atomicidade.
- */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { ConflictError } from "../../src/shared/application/errors";
 import { ValidationError } from "../../src/shared/domain/domain-error";
 import {
-  IdempotencyConflictError,
   ExternalIdConflictError,
+  IdempotencyConflictError,
   WalletNotFoundError,
-} from "../../src/modules/wagering/application/process-wager-transaction.use-case";
-import type { UnitOfWork } from "../../src/shared/application/unit-of-work.port";
+} from "../../src/modules/wagering/application/errors";
+import type { WageringUnitOfWork } from "../../src/modules/wagering/application/ports/wagering-repositories";
 import {
   type Harness,
   createHarness,
@@ -49,19 +45,18 @@ describe("abertura de wallet", () => {
 
   test("wallet duplicada para player + moeda é conflito", async () => {
     const playerId = crypto.randomUUID();
-    await h.openWallet.execute({ playerId, initialBalance: { amount: "1.00", currency: "BRL" } }, "t");
+    await h.openWallet.execute({ playerId, initialBalance: { amount: "1.00", currency: "BRL" } }, { correlationId: "t" });
     const err = await h.openWallet
-      .execute({ playerId, initialBalance: { amount: "1.00", currency: "BRL" } }, "t")
+      .execute({ playerId, initialBalance: { amount: "1.00", currency: "BRL" } }, { correlationId: "t" })
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ConflictError);
     expect((err as ConflictError).code).toBe("WALLET_ALREADY_EXISTS");
-    // outra moeda é outra wallet
-    await h.openWallet.execute({ playerId, initialBalance: { amount: "1.00", currency: "USD" } }, "t");
+    await h.openWallet.execute({ playerId, initialBalance: { amount: "1.00", currency: "USD" } }, { correlationId: "t" });
   });
 
   test("entrada inválida não toca o banco", async () => {
     await expect(
-      h.openWallet.execute({ playerId: crypto.randomUUID(), initialBalance: { amount: "1.001", currency: "BRL" } }, "t"),
+      h.openWallet.execute({ playerId: crypto.randomUUID(), initialBalance: { amount: "1.001", currency: "BRL" } }, { correlationId: "t" }),
     ).rejects.toBeInstanceOf(ValidationError);
   });
 });
@@ -76,7 +71,7 @@ describe("BET / WIN / LOSS", () => {
     expect(result.transaction.balanceAfter?.amount).toBe("975.00");
     expect(await expectConsistent(h.sql, w.walletId)).toMatchObject({ balance: "975.00", version: 2, debits: 1 });
     expect(await outboxTypes(h.sql, w.walletId)).toEqual([
-      "WalletBalanceChanged", // abertura
+      "WalletBalanceChanged",
       "WagerTransactionProcessed",
       "WalletBalanceChanged",
     ]);
@@ -126,12 +121,12 @@ describe("idempotência persistente", () => {
     const w = await newWallet(h, "100.00");
     const payload = wagerPayload({ ...w, kind: "BET", amount: "30.00" });
     const first = await h.processWager.execute(payload, http());
-    await h.processWager.execute(wagerPayload({ ...w, kind: "WIN", amount: "500.00" }), http()); // saldo muda depois
+    await h.processWager.execute(wagerPayload({ ...w, kind: "WIN", amount: "500.00" }), http());
 
     const replay = await h.processWager.execute(payload, http());
     expect(replay.idempotentReplay).toBe(true);
     expect(replay.transaction.id).toBe(first.transaction.id);
-    expect(replay.transaction.balanceAfter?.amount).toBe("70.00"); // não 570.00
+    expect(replay.transaction.balanceAfter?.amount).toBe("70.00");
     expect(await expectConsistent(h.sql, w.walletId)).toMatchObject({ debits: 1, balance: "570.00" });
   });
 
@@ -143,7 +138,7 @@ describe("idempotência persistente", () => {
     const replay = await h.processWager.execute(payload, http());
     expect(replay).toMatchObject({ idempotentReplay: true });
     expect(replay.transaction.id).toBe(first.transaction.id);
-    expect<string | undefined>(replay.transaction.status).toBe("REJECTED"); // não reavalia com o saldo novo
+    expect<string | undefined>(replay.transaction.status).toBe("REJECTED");
   });
 
   test("mesma key com payload diferente é conflito, não replay", async () => {
@@ -256,7 +251,6 @@ describe("referência fora de ordem", () => {
     expect(await outboxTypes(h.sql, w.walletId)).toContain("WagerTransactionPendingReference");
     expect(await expectConsistent(h.sql, w.walletId)).toMatchObject({ balance: "100.00", version: 1 });
 
-    // a BET chega e antecipa a checagem de quem a esperava
     await h.processWager.execute(wagerPayload({ ...w, kind: "BET", amount: "30.00", externalTransactionId: betExt }), http());
     const [{ due }] = await h.sql`SELECT next_reference_check_at <= now() AS due FROM wager_transactions WHERE id = ${refund.transaction.id}`;
     expect(due).toBe(true);
@@ -266,7 +260,6 @@ describe("referência fora de ordem", () => {
     expect(await transactionRow(h.sql, refund.transaction.id)).toMatchObject({ status: "PROCESSED", balance_after: "100.00" });
     expect(await expectConsistent(h.sql, w.walletId)).toMatchObject({ balance: "100.00", debits: 1, credits: 2 });
 
-    // segunda execução do worker é no-op
     expect(await h.settlePending.execute(refund.transaction.id)).toEqual({ kind: "skipped", reason: "not_pending" });
   });
 
@@ -297,26 +290,26 @@ describe("referência fora de ordem", () => {
 
 describe("atomicidade: wallet, transação, ledger, inbox e outbox", () => {
   test("falha depois de gravar tudo menos o COMMIT: nada persiste", async () => {
-    // Envolve o UnitOfWork real e explode na última escrita (outbox).
     const failing = await createHarness({
-      wrapUnitOfWork: (inner: UnitOfWork): UnitOfWork => ({
+      decorateUnitOfWork: (inner: WageringUnitOfWork): WageringUnitOfWork => ({
         run: (work) =>
-          inner.run((scope) =>
+          inner.run((repositories) =>
             work({
-              ...bindAll(scope),
-              enqueueEvents: async (events) => {
-                await scope.enqueueEvents(events); // grava a outbox...
-                throw new Error("crash before commit"); // ...e o processo "morre"
+              ...repositories,
+              outbox: {
+                enqueue: async (events) => {
+                  await repositories.outbox.enqueue(events);
+                  throw new Error("crash before commit");
+                },
               },
             }),
           ),
       }),
     });
     try {
-      // A wallet é aberta por um grafo sem falha injetada, no mesmo banco.
       const playerId = crypto.randomUUID();
       const ok = await createHarnessOn(failing);
-      const wallet = await ok.openWallet.execute({ playerId, initialBalance: { amount: "100.00", currency: "BRL" } }, "t");
+      const wallet = await ok.openWallet.execute({ playerId, initialBalance: { amount: "100.00", currency: "BRL" } }, { correlationId: "t" });
       await ok.closeOrm();
 
       const messageId = uniq("msg");
@@ -340,19 +333,6 @@ describe("atomicidade: wallet, transação, ledger, inbox e outbox", () => {
   });
 });
 
-// --- utilitários locais ------------------------------------------------------
-
-function bindAll<T extends object>(obj: T): T {
-  const proto = Object.getPrototypeOf(obj) as object;
-  const out = {} as Record<string, unknown>;
-  for (const key of Object.getOwnPropertyNames(proto)) {
-    const value = (obj as Record<string, unknown>)[key];
-    if (key !== "constructor" && typeof value === "function") out[key] = (value as Function).bind(obj);
-  }
-  return out as T;
-}
-
-/** Segundo conjunto de casos de uso, sem falha injetada, sobre o banco do harness `of`. */
 async function createHarnessOn(of: Harness) {
   const { buildHarness } = await import("../support/harness");
   const other = await buildHarness(of.url, of.sql, { poolMax: 2 });

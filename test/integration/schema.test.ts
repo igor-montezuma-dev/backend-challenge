@@ -1,10 +1,3 @@
-/**
- * Testes de integração do schema: migrations e constraints contra PostgreSQL real.
- *
- * Aqui a aplicação é deliberadamente "burra": escrevemos SQL direto, simulando
- * um bug ou uma race no código, para provar que o BANCO recusa estados
- * inválidos — que é o que a seção 5 do desafio exige.
- */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { SQL } from "bun";
 import { createTestDatabase, migrateDown, migrateUp, pgError } from "../support/database";
@@ -21,10 +14,6 @@ beforeAll(async () => {
 afterAll(async () => {
   await db.drop();
 });
-
-// ---------------------------------------------------------------------------
-// Fixtures em SQL puro
-// ---------------------------------------------------------------------------
 
 const uuid = (): string => crypto.randomUUID();
 const hash = (): string => new Bun.CryptoHasher("sha256").update(uuid()).digest("hex");
@@ -65,7 +54,6 @@ async function insertTx(q: SQL, row: TxRow): Promise<void> {
     )`;
 }
 
-/** Abre uma wallet do jeito certo: wallet v1 + OPENING + lançamento, numa transação. */
 async function openWallet(balance = "100.00", currency = "BRL"): Promise<string> {
   const walletId = uuid();
   await sql.begin(async (tx) => {
@@ -86,10 +74,6 @@ async function openWallet(balance = "100.00", currency = "BRL"): Promise<string>
   return walletId;
 }
 
-/**
- * Aplica um movimento corretamente: lock na wallet, transação PROCESSED,
- * lançamento e saldo novo — tudo na mesma transação SQL.
- */
 async function applyMovement(
   q: SQL,
   walletId: string,
@@ -122,8 +106,6 @@ const ledgerSum = async (walletId: string): Promise<string> =>
     SELECT COALESCE(SUM(CASE direction WHEN 'CREDIT' THEN amount ELSE -amount END), 0)::numeric(19,2)::text AS total
       FROM wallet_ledger_entries WHERE wallet_id = ${walletId}`)[0].total;
 
-// ---------------------------------------------------------------------------
-
 describe("migrations", () => {
   test("up → down → up é reversível e deixa o banco limpo", async () => {
     const tmp = await createTestDatabase();
@@ -137,7 +119,7 @@ describe("migrations", () => {
         SELECT count(*)::int AS f FROM pg_proc p JOIN pg_namespace ns ON ns.oid = p.pronamespace
          WHERE ns.nspname = 'public'`;
       expect(f).toBe(0);
-      await migrateUp(tmp.sql); // reaplicável
+      await migrateUp(tmp.sql);
     } finally {
       await tmp.drop();
     }
@@ -168,7 +150,6 @@ describe("wallets", () => {
     const err = await pgError(() =>
       sql`INSERT INTO wallets (id, player_id, currency, balance, version) VALUES (${uuid()}, ${player}, 'BRL', 0, 1)`);
     expect(err.constraint).toBe("uq_wallets_player_currency");
-    // outra moeda é outra wallet
     await sql`INSERT INTO wallets (id, player_id, currency, balance, version) VALUES (${uuid()}, ${player}, 'USD', 0, 1)`;
   });
 
@@ -260,13 +241,11 @@ describe("ledger", () => {
   });
 
   test("lost update: duas escritas a partir do mesmo saldo colidem na versão", async () => {
-    // Simula o bug clássico read → calculate → update sem lock: os dois leram
-    // v1 / 100.00 e tentam gravar v2. O banco aceita só um.
     const id = await openWallet("100.00");
     const attempt = (amount: string) =>
       sql.begin(async (tx) => {
         const txId = uuid();
-        const after = (100 - Number(amount)).toFixed(2); // só fixture de teste
+        const after = (100 - Number(amount)).toFixed(2);
         await insertTx(tx, { id: txId, wallet_id: id, kind: "BET", amount, currency: "BRL",
           status: "PROCESSED", balance_after: after, processed_at: new Date() });
         await tx`INSERT INTO wallet_ledger_entries
@@ -338,7 +317,6 @@ describe("wager_transactions", () => {
         status: "PROCESSED", balance_after: "95.00", processed_at: new Date() }));
     expect(err.constraint).toBe("transaction_ledger_mismatch");
 
-    // LOSS processada não move saldo e não tem lançamento — válido.
     await insertTx(sql, { id: uuid(), wallet_id: id, kind: "LOSS", amount: "5.00", currency: "BRL",
       status: "PROCESSED", balance_after: "100.00", processed_at: new Date() });
   });
@@ -351,14 +329,11 @@ describe("wager_transactions", () => {
 
     await sql.begin((tx) => applyMovement(tx, id, "REFUND", "30.00", reversal));
 
-    // REFUND repetido com outro id externo: barrado pelo índice parcial.
     const err = await pgError(() => sql.begin((tx) => applyMovement(tx, id, "REFUND", "30.00", reversal)));
     expect(err.constraint).toBe("uq_wager_tx_single_reversal");
-    // ROLLBACK da mesma BET também (seria crédito duplicado).
     const err2 = await pgError(() => sql.begin((tx) => applyMovement(tx, id, "ROLLBACK", "30.00", reversal)));
     expect(err2.constraint).toBe("uq_wager_tx_single_reversal");
 
-    // Uma reversão REJEITADA não consome a referência nem gera lançamento.
     await insertTx(sql, { id: uuid(), wallet_id: id, kind: "REFUND", amount: "30.00", currency: "BRL",
       status: "REJECTED", failure_code: "ALREADY_REVERSED", ...reversal });
 
@@ -373,7 +348,6 @@ describe("inbox / outbox", () => {
     const err = await pgError(() =>
       sql`INSERT INTO inbox_messages (consumer_name, message_id, payload_hash) VALUES ('wager-consumer', 'msg-1', ${hash()})`);
     expect(err.constraint).toBe("pk_inbox_messages");
-    // outro consumidor pode processar a mesma mensagem
     await sql`INSERT INTO inbox_messages (consumer_name, message_id, payload_hash) VALUES ('other-consumer', 'msg-1', ${hash()})`;
   });
 

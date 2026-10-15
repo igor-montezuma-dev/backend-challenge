@@ -1,15 +1,14 @@
-/**
- * Regras de negócio da seção 7, aplicadas pelo serviço de domínio settleWager.
- */
 import { describe, expect, test } from "bun:test";
 import { Money } from "../../src/shared/domain/money";
-import { FailureCode } from "../../src/modules/wagering/domain/failure-code";
-import { DEFAULT_REFERENCE_RETRY_POLICY } from "../../src/modules/wagering/domain/reference-retry-policy";
-import { type SettlementOutcome, settleWager } from "../../src/modules/wagering/domain/wager-settlement";
-import { type WagerTransaction, WagerTransactionStatus as Status } from "../../src/modules/wagering/domain/wager-transaction";
-import type { Wallet } from "../../src/modules/wallets/domain/wallet";
-import { LedgerDirection } from "../../src/modules/wallets/domain/wallet-ledger-entry";
+import { FailureCode } from "../../src/modules/wagering/domain/transaction/failure-code";
+import { DEFAULT_REFERENCE_RETRY_POLICY } from "../../src/modules/wagering/domain/transaction/reference-retry-policy";
+import { type SettlementOutcome, WagerSettlementService } from "../../src/modules/wagering/domain/settlement/wager-settlement.service";
+import { type WagerTransaction, WagerTransactionStatus as Status } from "../../src/modules/wagering/domain/transaction/wager-transaction";
+import type { Wallet } from "../../src/modules/wagering/domain/wallet/wallet";
+import { LedgerDirection } from "../../src/modules/wagering/domain/wallet/wallet-ledger-entry";
 import { Kind, T0, nextId, openWallet, wager } from "./support/builders";
+
+const settlement = new WagerSettlementService(DEFAULT_REFERENCE_RETRY_POLICY);
 
 function settle(
   tx: WagerTransaction,
@@ -17,18 +16,16 @@ function settle(
   reference?: WagerTransaction,
   referenceAlreadyReversed = false,
 ): SettlementOutcome {
-  return settleWager({
+  return settlement.settle({
     transaction: tx,
     wallet,
     reference,
     referenceAlreadyReversed,
     ledgerEntryId: nextId("le"),
     now: T0,
-    retryPolicy: DEFAULT_REFERENCE_RETRY_POLICY,
   });
 }
 
-/** BET já processada, pronta para ser referenciada. */
 function processedBet(wallet: Wallet, amount: string, ext = nextId("bet")): WagerTransaction {
   const bet = wager(Kind.Bet, amount, { externalTransactionId: ext });
   expect(settle(bet, wallet).kind).toBe("processed");
@@ -65,9 +62,9 @@ describe("BET", () => {
     expect(settle(second, wallet)).toEqual({ kind: "rejected", code: FailureCode.InsufficientFunds });
 
     expect(wallet.balance.amount).toBe("20.00");
-    expect(wallet.version).toBe(2); // exatamente um débito
+    expect(wallet.version).toBe(2);
     expect(second.status).toBe(Status.Rejected);
-    expect(second.balanceAfter?.amount).toBe("20.00"); // saldo observado, para replay
+    expect(second.balanceAfter?.amount).toBe("20.00");
   });
 });
 
@@ -106,6 +103,22 @@ describe("LOSS", () => {
     expect(wallet.version).toBe(1);
     expect(loss.status).toBe(Status.Processed);
     expect(loss.balanceAfter?.amount).toBe("100.00");
+  });
+
+  test("pode referenciar a BET da rodada: processada sem lançamento e com a referência resolvida", () => {
+    const wallet = openWallet("100.00");
+    const bet = processedBet(wallet, "10.00", "bet-1");
+    const loss = wager(Kind.Loss, "0.00", { referenceExternalTransactionId: "bet-1" });
+    expect(settle(loss, wallet, bet)).toMatchObject({ kind: "processed", entry: undefined });
+    expect(loss.referenceTransactionId).toBe(bet.id);
+    expect(wallet.balance.amount).toBe("90.00");
+  });
+
+  test("referência que não é BET é rejeitada", () => {
+    const wallet = openWallet("100.00");
+    const win = processedWin(wallet, "10.00", "win-1");
+    const loss = wager(Kind.Loss, "0.00", { referenceExternalTransactionId: "win-1" });
+    expect(settle(loss, wallet, win)).toEqual({ kind: "rejected", code: FailureCode.InvalidReferenceKind });
   });
 });
 
@@ -199,13 +212,13 @@ describe("ROLLBACK", () => {
   test("que deixaria saldo negativo → REVERSAL_WOULD_OVERDRAW (código distinto de INSUFFICIENT_FUNDS)", () => {
     const wallet = openWallet("0.00");
     const win = processedWin(wallet, "50.00", "win-1");
-    processedBet(wallet, "45.00"); // jogador já apostou o prêmio
+    processedBet(wallet, "45.00");
     const rollback = wager(Kind.Rollback, "50.00", { referenceExternalTransactionId: "win-1" });
 
     expect(settle(rollback, wallet, win)).toEqual({ kind: "rejected", code: FailureCode.ReversalWouldOverdraw });
     expect(FailureCode.ReversalWouldOverdraw).not.toBe(FailureCode.InsufficientFunds);
     expect(wallet.balance.amount).toBe("5.00");
-    expect(rollback.status).toBe(Status.Rejected); // auditável
+    expect(rollback.status).toBe(Status.Rejected);
   });
 
   test("de ROLLBACK não é permitido", () => {
@@ -258,7 +271,7 @@ describe("invariante: saldo == soma do ledger ao longo de uma rodada completa", 
     track(settle(bet2, wallet));
     track(settle(wager(Kind.Refund, "70.00", { referenceExternalTransactionId: "b2" }), wallet, bet2));
     track(settle(wager(Kind.Loss, "0.00"), wallet));
-    track(settle(wager(Kind.Bet, "1000.00"), wallet)); // rejeitada
+    track(settle(wager(Kind.Bet, "1000.00"), wallet));
 
     const ledgerTotal = entries.reduce((a, b) => a.add(b));
     expect(ledgerTotal.equals(wallet.balance)).toBe(true);

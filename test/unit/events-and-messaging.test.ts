@@ -1,15 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import type { EventContext } from "../../src/shared/domain/integration-event";
-import { uuidv7 } from "../../src/shared/domain/uuid";
+import { uuidv7 } from "../../src/shared/infrastructure/uuid-v7.generator";
 import { InvalidStateTransitionError } from "../../src/shared/domain/domain-error";
 import {
   WagerTransactionPendingReference,
   WagerTransactionProcessed,
   WagerTransactionRejected,
   WalletBalanceChanged,
-} from "../../src/modules/wagering/domain/events";
-import { FailureCode } from "../../src/modules/wagering/domain/failure-code";
-import { DEFAULT_REFERENCE_RETRY_POLICY } from "../../src/modules/wagering/domain/reference-retry-policy";
+} from "../../src/modules/wagering/domain/events/wagering-events";
+import { FailureCode } from "../../src/modules/wagering/domain/transaction/failure-code";
+import { DEFAULT_REFERENCE_RETRY_POLICY } from "../../src/modules/wagering/domain/transaction/reference-retry-policy";
 import { InboxMessage } from "../../src/modules/messaging/domain/inbox-message";
 import { OutboxMessage } from "../../src/modules/messaging/domain/outbox-message";
 import { Kind, T0, brl, openWallet, wager } from "./support/builders";
@@ -25,7 +25,6 @@ describe("eventos de integração", () => {
     const entry = wallet.debit(brl("25.00"), { transactionId: "tx-1", ledgerEntryId: "le-1", at: T0 });
     const event = WalletBalanceChanged.from(wallet, entry, ctx());
 
-    // Formato no fio: o que o consumidor recebe depois de JSON.stringify.
     const wire: unknown = JSON.parse(JSON.stringify(event));
     expect(wire).toEqual({
       eventId: "evt-1",
@@ -45,7 +44,6 @@ describe("eventos de integração", () => {
         walletVersion: 2,
       },
     });
-    // JSON puro: nenhuma instância de Money vaza no payload
     expect(wire).toEqual(event.toJSON());
     expect(Object.isFrozen(event.data)).toBe(true);
   });

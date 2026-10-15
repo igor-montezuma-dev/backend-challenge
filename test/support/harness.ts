@@ -1,28 +1,26 @@
-/**
- * Monta os casos de uso de verdade (MikroORM + PostgreSQL real) sobre um banco
- * isolado e migrado. Nada é mockado: é o mesmo grafo que a aplicação usa.
- */
 import { MikroORM } from "@mikro-orm/postgresql";
 import type { SQL } from "bun";
-import { buildMikroOrmConfig } from "../../src/database/mikro-orm.config";
-import { DEFAULT_UNIT_OF_WORK_OPTIONS, MikroOrmUnitOfWork, type UnitOfWorkOptions } from "../../src/database/mikro-orm-unit-of-work";
-import { SystemClock, type Clock } from "../../src/shared/application/clock";
-import type { UnitOfWork } from "../../src/shared/application/unit-of-work.port";
-import { UuidV7Generator } from "../../src/shared/domain/uuid";
-import { ProcessWagerTransaction } from "../../src/modules/wagering/application/process-wager-transaction.use-case";
-import { SettlePendingReference } from "../../src/modules/wagering/application/settle-pending-reference.use-case";
+import type { Clock } from "../../src/shared/application/clock";
+import { buildMikroOrmConfig } from "../../src/shared/infrastructure/database/mikro-orm.config";
+import { SystemClock } from "../../src/shared/infrastructure/system-clock";
+import { UuidV7Generator } from "../../src/shared/infrastructure/uuid-v7.generator";
+import { MESSAGING_ENTITIES } from "../../src/modules/messaging/infrastructure/persistence/messaging.entities";
+import type { WageringUnitOfWork } from "../../src/modules/wagering/application/ports/wagering-repositories";
+import type { OpenWallet } from "../../src/modules/wagering/application/use-cases/open-wallet.use-case";
+import type { ProcessWagerTransaction } from "../../src/modules/wagering/application/use-cases/process-wager-transaction.use-case";
+import type { SettlePendingReference } from "../../src/modules/wagering/application/use-cases/settle-pending-reference.use-case";
 import {
   DEFAULT_REFERENCE_RETRY_POLICY,
   type ReferenceRetryPolicy,
-} from "../../src/modules/wagering/domain/reference-retry-policy";
-import { OpenWallet } from "../../src/modules/wallets/application/open-wallet.use-case";
+} from "../../src/modules/wagering/domain/transaction/reference-retry-policy";
+import { WAGERING_ENTITIES } from "../../src/modules/wagering/infrastructure/persistence/wagering.entities";
+import { type WageringSettings, composeWagering } from "../../src/modules/wagering/infrastructure/wagering.composition";
 import { createTestDatabase, migrateUp } from "./database";
 
 export interface Harness {
   url: string;
   sql: SQL;
   orm: MikroORM;
-  uow: UnitOfWork;
   openWallet: OpenWallet;
   processWager: ProcessWagerTransaction;
   settlePending: SettlePendingReference;
@@ -33,9 +31,8 @@ export interface HarnessOptions {
   poolMax?: number;
   retryPolicy?: ReferenceRetryPolicy;
   clock?: Clock;
-  unitOfWork?: Partial<UnitOfWorkOptions>;
-  /** Permite envolver o UnitOfWork (ex.: injetar falha para testar atomicidade). */
-  wrapUnitOfWork?: (uow: UnitOfWork) => UnitOfWork;
+  settings?: Partial<Omit<WageringSettings, "referenceRetryPolicy">>;
+  decorateUnitOfWork?: (unitOfWork: WageringUnitOfWork) => WageringUnitOfWork;
 }
 
 export async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
@@ -44,38 +41,43 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
   return buildHarness(db.url, db.sql, options, db.drop);
 }
 
-/** Usado também por processos filhos (teste multi-instância) sobre um banco existente. */
 export async function buildHarness(
   url: string,
   sql: SQL,
   options: HarnessOptions = {},
   drop: () => Promise<void> = async () => {},
 ): Promise<Harness> {
-  const orm = await MikroORM.init({ ...buildMikroOrmConfig(url, options.poolMax ?? 30), debug: false });
-  const ids = new UuidV7Generator();
-  const clock = options.clock ?? new SystemClock();
-  const policy = options.retryPolicy ?? DEFAULT_REFERENCE_RETRY_POLICY;
-  const baseUow = new MikroOrmUnitOfWork(orm, { ...DEFAULT_UNIT_OF_WORK_OPTIONS, ...options.unitOfWork });
-  const uow = options.wrapUnitOfWork ? options.wrapUnitOfWork(baseUow) : baseUow;
+  const orm = await MikroORM.init({
+    ...buildMikroOrmConfig({ url, poolMax: options.poolMax ?? 30, entities: [...WAGERING_ENTITIES, ...MESSAGING_ENTITIES] }),
+    debug: false,
+  });
+  const application = composeWagering({
+    orm,
+    ids: new UuidV7Generator(),
+    clock: options.clock ?? new SystemClock(),
+    settings: {
+      lockTimeoutMs: 5_000,
+      maxTransactionAttempts: 4,
+      ...options.settings,
+      referenceRetryPolicy: options.retryPolicy ?? DEFAULT_REFERENCE_RETRY_POLICY,
+    },
+    reconciliationObserver: { onDivergence: () => {} },
+    ...(options.decorateUnitOfWork ? { decorateUnitOfWork: options.decorateUnitOfWork } : {}),
+  });
 
   return {
     url,
     sql,
     orm,
-    uow,
-    openWallet: new OpenWallet(uow, ids, clock),
-    processWager: new ProcessWagerTransaction(uow, ids, clock, policy),
-    settlePending: new SettlePendingReference(uow, ids, clock, policy),
+    openWallet: application.openWallet,
+    processWager: application.processWager,
+    settlePending: application.settlePendingReference,
     close: async () => {
       await orm.close(true);
       await drop();
     },
   };
 }
-
-// ---------------------------------------------------------------------------
-// Payloads e consultas de verificação
-// ---------------------------------------------------------------------------
 
 let seq = 0;
 export const uniq = (prefix: string): string => `${prefix}-${Date.now().toString(36)}-${++seq}`;
@@ -116,7 +118,7 @@ export const http = (correlationId = uniq("corr")) => ({ correlationId });
 
 export async function newWallet(h: Harness, balance: string, currency = "BRL") {
   const playerId = crypto.randomUUID();
-  const wallet = await h.openWallet.execute({ playerId, initialBalance: { amount: balance, currency } }, "test");
+  const wallet = await h.openWallet.execute({ playerId, initialBalance: { amount: balance, currency } }, { correlationId: "test" });
   return { walletId: wallet.id, playerId };
 }
 
@@ -129,7 +131,6 @@ export interface WalletSnapshot {
   credits: number;
 }
 
-/** Estado persistido + saldo reconstruído pelo ledger. */
 export async function snapshot(sql: SQL, walletId: string): Promise<WalletSnapshot> {
   const [row] = await sql`
     SELECT w.balance::text AS balance, w.version,
@@ -143,7 +144,6 @@ export async function snapshot(sql: SQL, walletId: string): Promise<WalletSnapsh
   return row as WalletSnapshot;
 }
 
-/** Invariante final de todos os testes: wallet.balance == saldo reconstruído pelo ledger. */
 export async function expectConsistent(sql: SQL, walletId: string): Promise<WalletSnapshot> {
   const s = await snapshot(sql, walletId);
   if (s.balance !== s.ledgerSum) {

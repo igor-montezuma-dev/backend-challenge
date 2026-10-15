@@ -1,15 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import { ValidationError } from "../../src/shared/domain/domain-error";
 import { Money } from "../../src/shared/domain/money";
-import { FailureCode } from "../../src/modules/wagering/domain/failure-code";
-import { wagerPayloadHash } from "../../src/modules/wagering/domain/payload-hash";
-import { DEFAULT_REFERENCE_RETRY_POLICY as POLICY } from "../../src/modules/wagering/domain/reference-retry-policy";
+import { FailureCode } from "../../src/modules/wagering/domain/transaction/failure-code";
+import { wagerPayloadHash } from "../../src/modules/wagering/domain/transaction/wager-payload";
+import { DEFAULT_REFERENCE_RETRY_POLICY as POLICY } from "../../src/modules/wagering/domain/transaction/reference-retry-policy";
 import {
   InvalidTransactionStateError,
   WagerTransaction,
   WagerTransactionStatus as Status,
-} from "../../src/modules/wagering/domain/wager-transaction";
-import { LedgerDirection } from "../../src/modules/wallets/domain/wallet-ledger-entry";
+} from "../../src/modules/wagering/domain/transaction/wager-transaction";
+import { LedgerDirection } from "../../src/modules/wagering/domain/wallet/wallet-ledger-entry";
 import { Kind, T0, brl, wager, wagerProps } from "./support/builders";
 
 describe("WagerTransaction.create — validação por tipo", () => {
@@ -107,7 +107,7 @@ describe("WagerTransaction — máquina de estados", () => {
     expect(tx.nextReferenceCheckAt!.getTime() - T0.getTime()).toBe(2_000);
 
     for (let i = 0; i < 20; i++) tx.markPendingReference(T0, POLICY);
-    expect(tx.nextReferenceCheckAt!.getTime() - T0.getTime()).toBe(POLICY.maxDelayMs); // teto
+    expect(tx.nextReferenceCheckAt!.getTime() - T0.getTime()).toBe(POLICY.maxDelayMs);
   });
 
   test("espera esgota por número de tentativas ou por idade", () => {

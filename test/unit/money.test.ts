@@ -11,7 +11,7 @@ describe("Money.from — entradas válidas e escala fixa", () => {
     ["0", "0.00"],
     ["0.01", "0.01"],
     ["0.10", "0.10"],
-    ["99999999999999999.99", "99999999999999999.99"], // limite de numeric(19,2)
+    ["99999999999999999.99", "99999999999999999.99"],
   ])("%p → %p", (input, expected) => {
     expect(brl(input).amount).toBe(expected);
   });
