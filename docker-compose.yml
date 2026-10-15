@@ -1,5 +1,19 @@
 name: wagering-processor
 
+x-app-environment: &app-environment
+  DATABASE_URL: postgres://postgres:postgres@postgres:5432/wagering
+  AWS_REGION: us-east-1
+  AWS_ACCESS_KEY_ID: test
+  AWS_SECRET_ACCESS_KEY: test
+  SQS_ENDPOINT: http://localstack:4566
+  SQS_WAGER_QUEUE_URL: http://localstack:4566/000000000000/wager-transactions.fifo
+  SQS_WAGER_DLQ_URL: http://localstack:4566/000000000000/wager-transactions-dlq.fifo
+  SQS_EVENTS_QUEUE_URL: http://localstack:4566/000000000000/wagering-events.fifo
+  AUTH_MODE: jwt
+  AUTH_ISSUER: http://localhost:8080/realms/wagering
+  AUTH_JWKS_URL: http://keycloak:8080/realms/wagering/protocol/openid-connect/certs
+  AUTH_AUDIENCE: wagering-processor
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -23,41 +37,61 @@ services:
     volumes:
       - ./infra/localstack/init-sqs.sh:/etc/localstack/init/ready.d/init-sqs.sh:ro
     healthcheck:
-      test: ["CMD-SHELL", "awslocal sqs get-queue-url --queue-name wager-transactions.fifo"]
+      test: ["CMD-SHELL", "awslocal sqs get-queue-url --queue-name wagering-events.fifo"]
       interval: 3s
       timeout: 5s
       retries: 30
 
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_HOSTNAME: http://localhost:8080
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_HEALTH_ENABLED: "true"
+    ports: ["8080:8080"]
+    volumes:
+      - ./infra/keycloak:/opt/keycloak/data/import:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q '\"UP\"' <&3"
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 20s
+
   migrate:
-    image: oven/bun:1
-    working_dir: /app
-    volumes: [".:/app"]
+    build: .
     environment:
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/wagering
-    command: ["sh", "-c", "bun install && bun run migration:up"]
+    command: ["bun", "run", "migration:up"]
     depends_on:
       postgres: { condition: service_healthy }
 
-  # Três instâncias por padrão: a correção com múltiplas instâncias é requisito.
   app:
-    image: oven/bun:1
-    working_dir: /app
-    volumes: [".:/app"]
-    command: ["bun", "run", "src/main.ts"]
+    build: .
     environment:
+      <<: *app-environment
       PORT: "3000"
-      DATABASE_URL: postgres://postgres:postgres@postgres:5432/wagering
-      AWS_REGION: us-east-1
-      AWS_ACCESS_KEY_ID: test
-      AWS_SECRET_ACCESS_KEY: test
-      SQS_ENDPOINT: http://localstack:4566
-      SQS_WAGER_QUEUE_URL: http://localstack:4566/000000000000/wager-transactions.fifo
-      SQS_EVENTS_QUEUE_URL: http://localstack:4566/000000000000/wagering-events.fifo
       LOG_LEVEL: info
     deploy:
       replicas: 3
     ports: ["3000-3002:3000"]
     stop_grace_period: 30s
+    healthcheck:
+      test:
+        - CMD
+        - bun
+        - -e
+        - "fetch('http://localhost:3000/health/ready').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
     depends_on:
       migrate: { condition: service_completed_successfully }
       localstack: { condition: service_healthy }
+      keycloak: { condition: service_healthy }
