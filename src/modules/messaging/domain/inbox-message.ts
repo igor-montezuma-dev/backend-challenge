@@ -11,12 +11,6 @@ export interface InboxMessageState extends ReceiveInboxProps {
   processedAt?: Date | undefined;
 }
 
-/**
- * Registro de mensagem recebida. A deduplicação real é a PK
- * (consumer_name, message_id) no banco, gravada na mesma transação SQL do
- * efeito financeiro: se o commit acontece, a mensagem conta como processada;
- * se não acontece, nada aconteceu e a redelivery reprocessa.
- */
 export class InboxMessage {
   private constructor(
     readonly messageId: string,
@@ -49,7 +43,6 @@ export class InboxMessage {
     this._processedAt = at;
   }
 
-  /** Mesmo messageId com conteúdo diferente: produtor com bug ou colisão de id. */
   matchesPayload(payloadHash: string): boolean {
     return this.payloadHash === payloadHash;
   }

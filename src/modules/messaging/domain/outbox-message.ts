@@ -6,11 +6,6 @@ export interface OutboxRetryPolicy {
   readonly maxDelayMs: number;
 }
 
-/**
- * Sem limite de tentativas de propósito: o evento já foi confirmado junto com
- * a transação financeira e não pode ser perdido. Falhas persistentes aparecem
- * na métrica de outbox lag/attempts, não em descarte silencioso.
- */
 export const DEFAULT_OUTBOX_RETRY_POLICY: OutboxRetryPolicy = Object.freeze({
   baseDelayMs: 500,
   maxDelayMs: 60_000,
@@ -31,7 +26,6 @@ export interface OutboxMessageState {
 
 export class OutboxMessage {
   private constructor(
-    /** = eventId: o consumidor deduplica por ele. */
     readonly id: string,
     readonly aggregateId: string,
     readonly partitionKey: string,
@@ -104,7 +98,6 @@ export class OutboxMessage {
     this._attempts += 1;
   }
 
-  /** Incrementa attempts e agenda a próxima tentativa com backoff exponencial. */
   scheduleRetry(now: Date, error: string, policy: OutboxRetryPolicy = DEFAULT_OUTBOX_RETRY_POLICY): void {
     if (!this.isPending()) {
       throw new InvalidStateTransitionError(`outbox message ${this.id} already published`);

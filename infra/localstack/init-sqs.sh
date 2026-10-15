@@ -1,7 +1,4 @@
 #!/bin/sh
-# Cria as filas FIFO e liga a DLQ por redrive policy.
-# maxReceiveCount=5: após 5 entregas sem ack (falhas transitórias esgotadas ou
-# erro permanente), o SQS move a mensagem para a DLQ.
 set -eu
 
 DLQ_URL=$(awslocal sqs create-queue \
@@ -21,7 +18,6 @@ awslocal sqs create-queue \
     \"RedrivePolicy\": \"{\\\"deadLetterTargetArn\\\":\\\"$DLQ_ARN\\\",\\\"maxReceiveCount\\\":\\\"5\\\"}\"
   }"
 
-# Fila de saída dos eventos de integração publicados pela outbox.
 awslocal sqs create-queue \
   --queue-name wagering-events.fifo \
   --attributes FifoQueue=true,ContentBasedDeduplication=false
