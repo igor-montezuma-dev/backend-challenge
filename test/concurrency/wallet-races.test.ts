@@ -197,7 +197,7 @@ describe("múltiplas instâncias (processos independentes)", () => {
     const startAt = Date.now() + 1_500;
 
     const procs = ["i1", "i2", "i3"].map((instance) =>
-      Bun.spawn(["bun", join(import.meta.dir, "../support/instance-process.ts")], {
+      Bun.spawn([process.execPath, join(import.meta.dir, "../support/instance-process.ts")], {
         env: { ...process.env, JOB: JSON.stringify({ url: h.url, instance, operations, startAt }) },
         stdout: "pipe",
         stderr: "pipe",

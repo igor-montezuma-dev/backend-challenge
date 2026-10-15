@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { join } from "node:path";
 import type { Subprocess } from "bun";
 import { type Harness, createHarness, expectConsistent, newWallet, uniq, wagerPayload } from "../support/harness";
 import { SQS_TEST_ENDPOINT, type TestQueues, createTestQueues, drain, eventually, sendWagerMessage } from "../support/sqs";
@@ -6,7 +7,7 @@ import { SQS_TEST_ENDPOINT, type TestQueues, createTestQueues, drain, eventually
 const WALLETS = 6;
 const INITIAL_BALANCE = "1000.00";
 const EXPECTED_BALANCE = "995.00";
-const ROOT = new URL("../..", import.meta.url).pathname;
+const ROOT = join(import.meta.dir, "..", "..");
 
 let h: Harness;
 let queues: TestQueues;
@@ -24,7 +25,7 @@ afterAll(async () => {
 });
 
 function startInstance(name: string, logLevel = "warn"): Subprocess<"ignore", "pipe", "inherit"> {
-  const child = Bun.spawn(["bun", "run", "src/main.ts"], {
+  const child = Bun.spawn([process.execPath, "run", "src/main.ts"], {
     cwd: ROOT,
     env: {
       ...process.env,
