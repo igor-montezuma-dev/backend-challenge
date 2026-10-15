@@ -150,7 +150,7 @@ Regras comuns a toda referência (`ReferencePolicy`): deve estar `PROCESSED` e p
 
 Interpretações documentadas:
 
-1. **Reversão única por referência, qualquer que seja o tipo.** O enunciado diz "não pode ser revertida duas vezes pelo mesmo tipo de operação". Adotamos a leitura mais estrita: uma BET revertida por REFUND não pode ser revertida também por ROLLBACK, e vice-versa, porque as duas operações devolveriam o mesmo dinheiro duas vezes. O índice parcial único `uq_wager_tx_single_reversal` garante isso no banco. Reverter uma reversão (ROLLBACK de um REFUND) é permitido, porque referencia outra transação.
+1. **Reversão única por referência, qualquer que seja o tipo.** O enunciado diz "não pode ser revertida duas vezes pelo mesmo tipo de operação". A implementação adota a leitura mais estrita: uma BET revertida por REFUND não pode ser revertida também por ROLLBACK, e vice-versa, porque as duas operações devolveriam o mesmo dinheiro duas vezes. O índice parcial único `uq_wager_tx_single_reversal` garante isso no banco. Reverter uma reversão (ROLLBACK de um REFUND) é permitido, porque referencia outra transação.
 2. **ROLLBACK que deixaria saldo negativo** (por exemplo, desfazer um WIN já gasto) é rejeitado com `REVERSAL_WOULD_OVERDRAW`, distinto do `INSUFFICIENT_FUNDS` de uma aposta: o primeiro exige tratamento operacional, o segundo é comportamento normal do jogador.
 3. **WIN e LOSS sem referência são aceitos**, porque o enunciado diz que WIN "pode" referenciar a BET. Quando informada, a referência é validada como as demais.
 4. **Replay devolve o resultado original**, inclusive o `balance` observado naquele momento (persistido em `balance_after`).
@@ -181,7 +181,7 @@ Cada rejeição carrega um código estável e uma ação sugerida (`providerActi
 
 É a opção preferencial do desafio e tem o que o problema pede: Unit of Work e Identity Map explícitos, `em.transactional()`, `LockMode.PESSIMISTIC_WRITE` e `EntitySchema` para mapear sem decorators. O mapeamento fica em `infrastructure/persistence/*.record.ts` com mappers explícitos para o domínio. Assim o domínio não conhece o ORM, e o modelo de persistência pode ter colunas que o domínio não expõe (por exemplo `updated_at`).
 
-Onde o ORM atrapalharia, usamos SQL direto pela mesma conexão: claim da outbox e do worker de referências (`UPDATE … WHERE id IN (SELECT … FOR UPDATE SKIP LOCKED) RETURNING`), reconciliação e o "expedite" de pendências.
+Onde o ORM atrapalharia, o acesso é feito com SQL direto pela mesma conexão: claim da outbox e do worker de referências (`UPDATE … WHERE id IN (SELECT … FOR UPDATE SKIP LOCKED) RETURNING`), reconciliação e o "expedite" de pendências.
 
 ### Unidade de trabalho
 
@@ -231,7 +231,7 @@ Detalhes que importam:
 
 - **Sem lock global**: wallets diferentes nunca disputam o mesmo lock. Um teste segura o lock da wallet A numa transação aberta e verifica que a wallet B continua processando normalmente.
 - **Ordem de locks única**: todo caminho que altera saldo trava primeiro a wallet; a transação é relida depois do lock. Isso evita deadlock entre `ProcessWagerTransaction` e `SettlePendingReference`.
-- **Lookup de idempotência antes do lock**: um replay não espera na fila da wallet. Depois do lock a busca é repetida (`racedWhileWaitingForLock`), porque outra instância pode ter gravado a mesma chave enquanto esperávamos.
+- **Lookup de idempotência antes do lock**: um replay não espera na fila da wallet. Depois do lock a busca é repetida (`racedWhileWaitingForLock`), porque outra instância pode ter gravado a mesma chave durante a espera.
 - **Lock timeout**: excedido, a operação vira 503 / retry, nunca efeito parcial. É contado na métrica `wagering_lock_conflicts_total`.
 
 Cenário obrigatório (100.00 com duas apostas de 80.00) e variações (mesma aposta 50× em paralelo, hot wallet com 200 apostas, 3 processos independentes) estão em `test/concurrency/wallet-races.test.ts`.
@@ -255,6 +255,8 @@ Cenário obrigatório (100.00 com duas apostas de 80.00) e variações (mesma ap
 | Aceita, aguardando referência | `202` | `status: "PENDING_REFERENCE"` |
 | Rejeitada por regra de negócio | `422` | `status: "REJECTED"`, `failureCode`, `providerAction` |
 | Payload inválido / header ausente | `400` | `{ error: { code, message, field?, retryable: false } }` |
+| Sem token ou token inválido | `401` | `UNAUTHORIZED` (ver [§15](#15-autenticação)) |
+| Provedor autenticado agindo por outro | `403` | `PROVIDER_MISMATCH` |
 | Wallet ou transação inexistente | `404` | `WALLET_NOT_FOUND`, `TRANSACTION_NOT_FOUND` |
 | Conflito de idempotência ou de id externo; wallet duplicada | `409` | `IDEMPOTENCY_KEY_CONFLICT`, `EXTERNAL_TRANSACTION_ID_CONFLICT`, `WALLET_ALREADY_EXISTS` |
 | Falha transitória (banco fora, lock timeout) | `503` + `Retry-After` | `TRANSIENT_INFRASTRUCTURE_ERROR`, `retryable: true` |
@@ -290,7 +292,7 @@ Na mesma transação do efeito financeiro grava-se `(consumer_name, message_id, 
 
 **Limite de tentativas**: a redrive policy da fila (`maxReceiveCount = 5`) move para a DLQ qualquer mensagem recebida 5 vezes sem ack. Isso funciona mesmo se o código tiver um bug no tratamento de erros.
 
-**Wallet inexistente recebe ack, não vai para a DLQ.** Tratamos como erro de negócio: reprocessar não cria a wallet. A alternativa (DLQ para investigação manual) também é defensável; o evento fica nos logs com o código do erro.
+**Wallet inexistente recebe ack, não vai para a DLQ.** O caso é tratado como erro de negócio: reprocessar não cria a wallet. A alternativa (DLQ para investigação manual) também é defensável; o evento fica nos logs com o código do erro.
 
 ### Shutdown (SIGTERM)
 
@@ -418,18 +420,50 @@ Durante o desenvolvimento a carga também foi rodada num container de nuvem com 
 
 ## 15. Autenticação
 
-**Não implementada, por decisão de timebox**: a autenticação não pontua na avaliação e não deveria competir com correção financeira e concorrência. O ponto de extensão existe e está ligado:
+Implementada com **Keycloak** como Identity Provider externo e **OAuth2 client credentials**: os provedores de jogos são sistemas, não pessoas, então cada provedor é um *client* com segredo próprio e recebe um access token JWT. Não existe tabela de usuários nem senha no serviço.
 
-- `ProviderIdentityPort` (`src/auth/provider-identity.port.ts`) resolve a identidade do provedor a partir dos headers.
-- `ProviderAuthGuard` é um guard global que chama a porta em toda rota não marcada com `@Public()` e rejeita com 401 se a porta não devolver identidade. Health e métricas são públicos.
-- O adaptador atual, `AllowAllProviderIdentityAdapter`, aceita tudo.
+### Fluxo
 
-Desenho que seria adotado:
+```
+provedor ── client_id + client_secret ──► Keycloak (realm "wagering")
+         ◄────────── access token (JWT, RS256, 15 min) ──────────┘
+provedor ── Authorization: Bearer <token> ──► API
+                                              ProviderAuthGuard → JwtProviderIdentityAdapter
+                                              valida assinatura (JWKS), iss, aud, exp
+                                              providerId = claim "azp"
+```
 
-1. **Keycloak** no compose, um client OAuth2 *client credentials* por provedor (máquina para máquina, sem usuário final).
-2. Um `JwtProviderIdentityAdapter` valida o `Bearer` contra o JWKS do realm (assinatura, `iss`, `aud`, `exp`), com cache das chaves, e mapeia uma claim (`azp` ou uma claim customizada `provider_id`) para `providerId`.
-3. O caso de uso passa a exigir que `body.providerId` seja igual ao `providerId` autenticado. Hoje essa verificação não existe, porque não há identidade a comparar; é a principal lacuna de segurança.
-4. Mensagens da fila seguem como canal interno confiável (escopo definido pelo desafio), mas o `providerId` do payload continua sujeito às mesmas validações de domínio.
+### Peças
+
+- **`ProviderIdentityPort`** (`src/auth/provider-identity.port.ts`): resolve a identidade a partir dos headers. A aplicação só conhece essa porta.
+- **`JwtProviderIdentityAdapter`**: valida o token com a biblioteca `jose` contra o JWKS do realm (chaves em cache, com timeout e cooldown de refetch), exigindo `iss`, `aud = wagering-processor`, `exp` (tolerância de 5 s) e algoritmo assimétrico (`RS256`, `PS256`, `ES256`; `alg: none` e HMAC são recusados). O `providerId` vem da claim configurável `AUTH_PROVIDER_CLAIM`, por padrão `azp`, que no fluxo client credentials é o `client_id`.
+- **`AllowAllProviderIdentityAdapter`**: usado com `AUTH_MODE=disabled` (padrão fora do compose e nos testes de integração que não tratam de autenticação).
+- **`ProviderAuthGuard`**: guard global. Rotas marcadas com `@Public()` (health, métricas e documentação) passam; as demais exigem identidade.
+
+### Autorização: o provedor só age em nome próprio
+
+Autenticar não basta: um provedor válido não pode submeter transações em nome de outro. A regra fica no caso de uso, não no controller, para valer em qualquer canal que informe um provedor autenticado: `ProcessWagerTransaction` recebe `actingProviderId` e rejeita com `403 PROVIDER_MISMATCH` quando ele difere do `providerId` do corpo, **antes** de qualquer escrita. Nas consultas, `GET /providers/:providerId/...` de outro provedor é 403; `GET /wagering/transactions/:id` de outro provedor responde 404, para não revelar que o id existe.
+
+### Respostas
+
+| Situação | Status |
+|---|---|
+| Sem token, token malformado, assinatura inválida, expirado, emissor ou audiência errados | `401 UNAUTHORIZED` com `WWW-Authenticate: Bearer` |
+| Token válido de outro provedor | `403 PROVIDER_MISMATCH` |
+| Keycloak inalcançável para buscar as chaves | `503 TRANSIENT_INFRASTRUCTURE_ERROR` com `Retry-After`, porque o token pode ser válido e reenviar é seguro |
+
+### Configuração no compose
+
+- O realm `wagering` é importado na subida (`infra/keycloak/wagering-realm.json`) com os clients `provider-a`, `provider-b` e `load-provider`. Cada client tem só *service account* habilitado (sem login de usuário) e um mapper que coloca `wagering-processor` no `aud`.
+- `KC_HOSTNAME=http://localhost:8080` fixa o emissor do token, quem quer que o peça; `KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true` deixa as instâncias buscarem o JWKS pela rede interna (`http://keycloak:8080/...`). Sem isso, um token pedido pelo host teria `iss` diferente do esperado dentro do container.
+- As instâncias só sobem depois do health check do Keycloak.
+
+### Escopo e decisões
+
+- **Mensagens da fila** seguem como canal interno confiável, conforme o desafio; o `providerId` do payload passa pelas mesmas validações de domínio. Em produção, a autorização do canal assíncrono seria feita por política de acesso à fila (IAM).
+- **Wallets não são escopadas por provedor**: a wallet pertence ao jogador e é compartilhada entre provedores no modelo do desafio. Com um vínculo provedor ↔ jogador, as rotas de wallet passariam pela mesma regra.
+- **Readiness não depende do Keycloak**: com as chaves em cache, tokens continuam sendo validados durante uma indisponibilidade curta do IdP; derrubar todas as instâncias por isso pioraria a disponibilidade.
+- Os segredos dos clients estão no arquivo do realm por ser ambiente de desenvolvimento; em produção viriam de um cofre e seriam rotacionados.
 
 ## 16. Estratégia de testes
 
@@ -437,7 +471,7 @@ Desenho que seria adotado:
 - **Integração com dependências reais**: cada arquivo cria um banco PostgreSQL próprio, migrado do zero, e filas SQS exclusivas (FIFO e DLQ com redrive). Nenhum teste substitui PostgreSQL ou SQS por mock.
 - **Falhas injetadas por decorators**, não por mocks do sistema: uma `MessageQueue` cujo `acknowledge` falha uma vez simula o crash entre commit e ack; um `UnitOfWork` que lança erro transitório N vezes simula banco instável; um `Clock` adiantado ou atrasado simula relógio defasado.
 - **Concorrência real**: `Promise.all` com dezenas de operações sobre pools de conexão reais, e testes com **3 processos Bun independentes** competindo pela mesma wallet.
-- **Reinício**: o teste de recuperação sobe a aplicação como processo real, mata com `SIGKILL` no meio da carga, sobe outra instância e comprova o estado final: todas as mensagens processadas exatamente uma vez, inbox completa, nenhuma pendência, saldo igual ao ledger em todas as wallets, cadeia de versões contígua, todos os eventos da outbox entregues e DLQ vazia. Também confirma, pelos logs JSON, o shutdown limpo dos 3 workers após `SIGTERM`.
+- **Reinício**: o teste de recuperação sobe a aplicação como processo real, mata com `SIGKILL` no meio da carga, sobe outra instância e comprova o estado final: todas as mensagens processadas exatamente uma vez, inbox completa, nenhuma pendência, saldo igual ao ledger em todas as wallets, cadeia de versões contígua, todos os eventos da outbox entregues e DLQ vazia. Em Linux e macOS, também confirma pelos logs JSON o shutdown limpo dos 3 workers após `SIGTERM`; no Windows essa checagem é pulada, porque lá o sinal encerra o processo à força (o shutdown limpo continua coberto pelo teste de SIGTERM do consumidor, que roda em qualquer sistema).
 - **Determinismo**: esperas por estado usam `eventually` com prazo, nunca um `sleep` fixo. `sleep` só aparece onde o próprio cenário é temporal (expiração de lease, backoff), sempre com políticas curtas injetadas e folga em relação ao prazo.
 
 ## 17. Lições aprendidas durante o desenvolvimento
@@ -450,7 +484,9 @@ Desenho que seria adotado:
 
 | Limitação | Impacto | Próximo passo |
 |---|---|---|
-| Autenticação não implementada; `providerId` do corpo não é verificado contra uma identidade | qualquer cliente pode operar por qualquer provedor | adaptador JWT/Keycloak descrito em [§15](#15-autenticação) |
+| Segredos dos clients do Keycloak versionados no arquivo do realm | aceitável só em desenvolvimento | segredos em cofre (Vault, Secrets Manager) e rotação |
+| Rotas de wallet autenticadas, mas não escopadas por provedor | um provedor autenticado consulta wallets de jogadores de outro provedor | vínculo provedor ↔ jogador e a mesma regra de `PROVIDER_MISMATCH` |
+| Sem rate limiting por provedor | um provedor pode saturar as instâncias | limite por `providerId` no gateway ou na aplicação |
 | Status `FAILED` modelado no domínio e no schema, mas nenhum fluxo o produz | um erro permanente de infraestrutura dentro da transação faz rollback de tudo, então não há o que registrar como `FAILED` sem uma segunda transação; hoje vira HTTP 500 ou DLQ, com log | gravar a falha numa transação separada após o rollback, quando houver um caso permanente identificável |
 | Falha parcial dentro de um `SendMessageBatch` | se o SQS aceitar um evento posterior e recusar um anterior da mesma wallet, o consumidor pode ver o posterior antes; nenhum evento se perde e a duplicata é deduplicada por `eventId` | publicar uma mensagem por chamada quando a ordem estrita for mais importante que a vazão |
 | `outbox_messages` e `inbox_messages` crescem indefinidamente | custo de armazenamento e de índices com o tempo | job de retenção (por exemplo, apagar publicados com mais de 7 dias) ou particionamento por data |

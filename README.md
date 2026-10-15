@@ -8,13 +8,25 @@ As decisões técnicas, trade-offs e limitações estão em [ARCHITECTURE.md](./
 
 ---
 
+## Pré-requisitos
+
+| Ferramenta | Para quê |
+|---|---|
+| Docker com Compose v2 | subir a aplicação completa (obrigatório) |
+| [Bun 1.x](https://bun.sh) | rodar os testes, o teste de carga ou a aplicação fora do container |
+
+Portas usadas no host: `3000`–`3002` (aplicação), `5432` (PostgreSQL), `4566` (LocalStack) e `8080` (Keycloak). Elas precisam estar livres.
+
 ## Subir tudo com Docker Compose
 
-Pré-requisito: Docker com Compose v2.
-
 ```bash
-docker compose up --build
+git clone https://github.com/igor-montezuma-dev/backend-challenge.git
+cd backend-challenge
+docker compose up --build -d
+docker compose ps
 ```
+
+A primeira subida leva de 1 a 3 minutos (build da imagem, download das imagens e ~30 s do Keycloak). Está pronto quando `postgres`, `localstack`, `keycloak` e as três réplicas de `app` aparecem como `healthy`; o serviço `migrate` aplica as migrations e termina (por isso não aparece na lista). Logs: `docker compose logs -f app`.
 
 O compose sobe, nesta ordem:
 
@@ -26,7 +38,7 @@ O compose sobe, nesta ordem:
 | `migrate` | aplica as migrations e termina |
 | `app` × 3 | três instâncias da aplicação em `localhost:3000`, `3001` e `3002`, todas com autenticação JWT, consumidor SQS, publisher da outbox e worker de referências pendentes |
 
-Quando as três instâncias estiverem `healthy`:
+Com tudo `healthy`:
 
 - Swagger: <http://localhost:3000/docs>
 - Liveness: <http://localhost:3000/health/live>
@@ -59,7 +71,7 @@ $token = (Invoke-RestMethod -Method Post -Uri http://localhost:8080/realms/wager
   -Body @{ grant_type = "client_credentials"; client_id = "provider-a"; client_secret = "provider-a-secret" }).access_token
 ```
 
-No Swagger (`/docs`), clique em **Authorize** e cole o `access_token`. O provedor do token precisa ser o mesmo `providerId` do corpo: `provider-b` submetendo uma transação de `provider-a` recebe `403 PROVIDER_MISMATCH`. Para rodar sem autenticação, use `AUTH_MODE=disabled`.
+No Swagger (`/docs`), clique em **Authorize** e cole o `access_token`. Roteiro rápido para conferir: `POST /wallets` sem token → 401; com token → wallet criada; `POST /wagering/transactions` com o `walletId`/`playerId` dela → 201; a mesma requisição de novo → 200 com `idempotentReplay: true`. O provedor do token precisa ser o mesmo `providerId` do corpo: `provider-b` submetendo uma transação de `provider-a` recebe `403 PROVIDER_MISMATCH`. Para rodar sem autenticação, use `AUTH_MODE=disabled`.
 
 ## Rodar localmente (fora do container)
 
@@ -72,6 +84,8 @@ docker compose up -d postgres localstack keycloak
 bun run migration:up
 bun run start
 ```
+
+Não suba o serviço `app` do compose ao mesmo tempo: as duas formas usam a porta `3000`.
 
 ## Comandos
 
@@ -91,12 +105,15 @@ bun run start
 
 ## Testes
 
-Os testes de integração e concorrência usam **PostgreSQL e SQS reais** — nenhum mock substitui o banco ou a fila. Com `postgres` e `localstack` de pé:
+Os testes de integração e concorrência usam **PostgreSQL e SQS reais** — nenhum mock substitui o banco ou a fila. Com `postgres` e `localstack` de pé (o compose completo também serve):
 
 ```bash
+bun install
 docker compose up -d postgres localstack
 bun test
 ```
+
+Não é preciso `.env` para os testes. A suíte completa leva cerca de 1 minuto.
 
 Cada arquivo de teste cria o próprio banco temporário (migrado do zero) e filas SQS exclusivas, então os arquivos não interferem entre si e podem rodar em qualquer ordem. Variáveis opcionais: `TEST_DATABASE_ADMIN_URL` (padrão `postgres://postgres:postgres@localhost:5432/postgres`) e `TEST_SQS_ENDPOINT` (padrão `SQS_ENDPOINT` ou `http://localhost:4566`).
 
@@ -119,11 +136,15 @@ Todos os testes que movimentam saldo terminam verificando a invariante `wallet.b
 
 ## Teste de carga
 
-Com as três instâncias do compose rodando:
+Com o compose completo rodando:
 
 ```bash
+bun install
+cp .env.example .env
 bun run test:load
 ```
+
+O `.env` é usado só para saber qual fila de eventos o consumidor simulado deve ler; sem ele, a carga roda normalmente e o relatório mostra `downstream: "disabled"`.
 
 Parâmetros por variável de ambiente:
 
@@ -144,6 +165,8 @@ O relatório (JSON) traz ambiente, throughput, p50/p95/p99 por tipo, distribuiç
 
 ## Exemplos de uso
 
+Os exemplos em bash usam [`jq`](https://jqlang.github.io/jq/) para extrair o token.
+
 ```bash
 TOKEN=$(curl -s -X POST http://localhost:8080/realms/wagering/protocol/openid-connect/token \
   -d grant_type=client_credentials -d client_id=provider-a -d client_secret=provider-a-secret | jq -r .access_token)
@@ -160,9 +183,10 @@ curl -s -X POST localhost:3000/wagering/transactions \
 
 No PowerShell, prefira o Swagger (`/docs`) ou `Invoke-RestMethod`, porque o `curl` do Windows trata aspas de forma diferente.
 
-Publicar uma transação pela fila (LocalStack):
+Publicar uma transação pela fila (LocalStack; credenciais fictícias):
 
 ```bash
+AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_DEFAULT_REGION=us-east-1 \
 aws --endpoint-url http://localhost:4566 sqs send-message \
   --queue-url http://localhost:4566/000000000000/wager-transactions.fifo \
   --message-group-id <walletId> --message-deduplication-id msg-123 \
