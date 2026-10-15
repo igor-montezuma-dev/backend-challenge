@@ -469,6 +469,18 @@ Autenticar não basta: um provedor válido não pode submeter transações em no
 - **Readiness não depende do Keycloak**: com as chaves em cache, tokens continuam sendo validados durante uma indisponibilidade curta do IdP; derrubar todas as instâncias por isso pioraria a disponibilidade.
 - Os segredos dos clients estão no arquivo do realm por ser ambiente de desenvolvimento; em produção viriam de um cofre e seriam rotacionados.
 
+### Credenciais para acessar a documentação
+
+Com o compose no ar, abra `http://localhost:3000/docs`, clique em **Authorize** e preencha o bloco **keycloak (OAuth2, clientCredentials)** com um dos clients abaixo. O Swagger obtém o token no Keycloak e o envia em todas as chamadas; não é preciso copiar token.
+
+| client_id | client_secret | Uso |
+|---|---|---|
+| `provider-a` | `provider-a-secret` | provedor de exemplo |
+| `provider-b` | `provider-b-secret` | segundo provedor, para ver o `403 PROVIDER_MISMATCH` |
+| `load-provider` | `load-provider-secret` | teste de carga |
+
+O passo a passo completo, com o roteiro de chamadas, está no `README.md`, em "Testando pelo Swagger".
+
 ## 16. Estratégia de testes
 
 - **Unidade**: domínio puro (`Money`, `Wallet`, `WagerTransaction`, `ReferencePolicy`, `WagerSettlementService`, eventos, logger), sem I/O.
