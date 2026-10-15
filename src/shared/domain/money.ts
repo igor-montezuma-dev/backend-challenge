@@ -1,6 +1,5 @@
 import { DomainError, ValidationError } from "./domain-error";
 
-/** Contrato de entrada/saída: { "amount": "25.00", "currency": "BRL" } */
 export interface MoneyProps {
   amount: string;
   currency: string;
@@ -23,29 +22,12 @@ export class CurrencyMismatchError extends DomainError {
   }
 }
 
-/**
- * Valor monetário exato e imutável.
- *
- * Representação: inteiro de unidades mínimas (centavos) em `bigint`. O desafio
- * fixa a escala em 2 casas e rejeita entradas com mais casas, então nenhuma
- * operação produz fração de centavo e não existe arredondamento — soma e
- * subtração de inteiros são exatas. `number` nunca participa: o tipo `bigint`
- * não se mistura com `number` sem conversão explícita (2500n + 1 é erro).
- *
- * Simplificação documentada: todas as moedas usam escala 2. Moedas com outra
- * escala (JPY = 0, BHD = 3) exigiriam uma tabela de escalas por moeda.
- */
 export class Money {
   static readonly SCALE = 2;
   private static readonly FACTOR = 100n;
 
-  /**
-   * Limite de numeric(19,2): 17 dígitos inteiros + 2 decimais. Qualquer valor
-   * fora disso não seria persistível; rejeitamos no domínio, não no banco.
-   */
   static readonly MAX_MINOR_UNITS = 10n ** 19n - 1n;
 
-  /** Sem sinal, sem notação científica, sem zeros à esquerda, até 2 casas. */
   private static readonly AMOUNT_PATTERN = /^(0|[1-9]\d{0,16})(?:\.(\d{1,2}))?$/;
   private static readonly CURRENCY_PATTERN = /^[A-Z]{3}$/;
 
@@ -54,12 +36,6 @@ export class Money {
     readonly currency: string,
   ) {}
 
-  /**
-   * Parse do contrato de entrada. Rejeita: tipos não-string, string vazia,
-   * NaN, Infinity, notação científica, sinal (+/-), espaços, zeros à esquerda,
-   * mais de 2 casas decimais e valores acima do limite de numeric(19,2).
-   * Aceita "25", "25.5" e "25.50", e sempre serializa com 2 casas.
-   */
   static from(props: MoneyProps): Money {
     if (props === null || typeof props !== "object") {
       throw new InvalidMoneyError("money must be an object { amount, currency }");
@@ -84,7 +60,6 @@ export class Money {
     return new Money(0n, Money.parseCurrency(currency));
   }
 
-  /** Construção a partir de unidades mínimas (uso interno e testes). */
   static ofMinorUnits(minorUnits: bigint, currency: string): Money {
     return Money.checked(minorUnits, Money.parseCurrency(currency));
   }
@@ -128,7 +103,6 @@ export class Money {
     return this.currency === currency;
   }
 
-  /** "25.00", "-0.05", "1000.00" — sempre 2 casas, sem notação científica. */
   get amount(): string {
     const negative = this.minorUnits < 0n;
     const abs = negative ? -this.minorUnits : this.minorUnits;

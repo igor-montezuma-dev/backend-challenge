@@ -1,9 +1,3 @@
-/**
- * Envelope de evento de integração (seção 11 do desafio).
- *
- * `eventType` e `version` pertencem ao tipo (subclasse), nunca a uma string
- * solta no call site. `data` é JSON puro: dinheiro trafega como MoneyProps.
- */
 export interface IntegrationEventProps<T> {
   eventId: string;
   aggregateId: string;
@@ -13,9 +7,7 @@ export interface IntegrationEventProps<T> {
   data: T;
 }
 
-/** Contexto comum de quem emite eventos num mesmo caso de uso. */
 export interface EventContext {
-  /** Gera o eventId de cada evento emitido. */
   nextEventId: () => string;
   correlationId: string;
   causationId?: string;
@@ -53,11 +45,6 @@ export abstract class IntegrationEvent<T> {
     this.data = Object.freeze(structuredClone(props.data));
   }
 
-  /**
-   * Chave de ordenação no broker (MessageGroupId do SQS FIFO). Por padrão o
-   * agregado; eventos de transação sobrescrevem com a walletId para que tudo
-   * de uma wallet saia na ordem em que foi confirmado.
-   */
   get partitionKey(): string {
     return this.aggregateId;
   }

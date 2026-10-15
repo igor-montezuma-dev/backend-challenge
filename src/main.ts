@@ -3,17 +3,18 @@ import { Logger } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { AppModule } from "./app.module";
 import { loadAppConfig } from "./config/app.config";
+import { setupOpenApi } from "./shared/infrastructure/http/openapi/setup-openapi";
+import { JsonLogger } from "./shared/infrastructure/observability/json-logger";
 
 async function bootstrap(): Promise<void> {
   const config = loadAppConfig();
-  const app = await NestFactory.create(AppModule, { bufferLogs: true });
+  const app = await NestFactory.create(AppModule, { logger: new JsonLogger(config.logLevel) });
 
-  // SIGTERM/SIGINT disparam OnModuleDestroy/BeforeApplicationShutdown: é por aí
-  // que o consumidor SQS e os workers terminam o que estão fazendo antes de sair.
   app.enableShutdownHooks();
+  setupOpenApi(app);
 
   await app.listen(config.port);
-  Logger.log(`wagering-processor listening on :${config.port}`, "Bootstrap");
+  Logger.log(`wagering-processor listening on :${config.port} — docs at /docs`, "Bootstrap");
 }
 
 void bootstrap();

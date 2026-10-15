@@ -1,7 +1,7 @@
 {
   "name": "wagering-processor",
   "version": "0.1.0",
-  "description": "Distributed Wagering Processor \u2014 Jungle Gaming technical challenge",
+  "description": "Distributed Wagering Processor — Jungle Gaming technical challenge",
   "private": true,
   "license": "UNLICENSED",
   "scripts": {
@@ -10,9 +10,9 @@
     "start:dev": "bun --watch run src/main.ts",
     "start:prod": "bun run dist/main.js",
     "typecheck": "tsc --noEmit",
-    "migration:up": "bun run src/database/migrate.ts up",
-    "migration:down": "bun run src/database/migrate.ts down",
-    "migration:list": "bun run src/database/migrate.ts list",
+    "migration:up": "bun run src/shared/infrastructure/database/migrate.ts up",
+    "migration:down": "bun run src/shared/infrastructure/database/migrate.ts down",
+    "migration:list": "bun run src/shared/infrastructure/database/migrate.ts list",
     "test": "bun test",
     "test:unit": "bun test test/unit",
     "test:integration": "bun test test/integration",
@@ -28,6 +28,9 @@
     "@nestjs/common": "^11.0.0",
     "@nestjs/core": "^11.0.0",
     "@nestjs/platform-express": "^11.0.0",
+    "@nestjs/swagger": "^11.4.7",
+    "jose": "^5.9.6",
+    "prom-client": "15.1.3",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1"
   },

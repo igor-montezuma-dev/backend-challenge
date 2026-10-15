@@ -1,8 +1,3 @@
-/**
- * Erros da camada de aplicação. Cada classe corresponde a uma categoria que a
- * API e o consumidor SQS tratam de forma distinta (seção 9: o provedor precisa
- * saber, sem ler mensagem, se pode reenviar).
- */
 export abstract class ApplicationError extends Error {
   abstract readonly code: string;
 
@@ -12,7 +7,6 @@ export abstract class ApplicationError extends Error {
   }
 }
 
-/** Recurso inexistente (wallet ou transação). */
 export class NotFoundError extends ApplicationError {
   constructor(
     readonly code: string,
@@ -22,7 +16,6 @@ export class NotFoundError extends ApplicationError {
   }
 }
 
-/** Conflito de estado: idempotência divergente, wallet duplicada. */
 export class ConflictError extends ApplicationError {
   constructor(
     readonly code: string,
@@ -32,10 +25,6 @@ export class ConflictError extends ApplicationError {
   }
 }
 
-/**
- * Falha transitória de infraestrutura (banco fora, lock timeout, conexão
- * perdida). Nada foi confirmado: reenviar a mesma operação é seguro.
- */
 export class TransientInfrastructureError extends ApplicationError {
   readonly code = "TRANSIENT_INFRASTRUCTURE_ERROR";
 
@@ -43,6 +32,15 @@ export class TransientInfrastructureError extends ApplicationError {
     message: string,
     readonly retryAfterSeconds = 1,
     override readonly cause?: unknown,
+  ) {
+    super(message);
+  }
+}
+
+export class ForbiddenError extends ApplicationError {
+  constructor(
+    readonly code: string,
+    message: string,
   ) {
     super(message);
   }

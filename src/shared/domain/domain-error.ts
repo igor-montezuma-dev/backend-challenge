@@ -1,7 +1,3 @@
-/**
- * Base dos erros de domínio. `code` é estável e legível por máquina; a camada
- * de apresentação mapeia o código para HTTP, nunca a mensagem.
- */
 export abstract class DomainError extends Error {
   abstract readonly code: string;
 
@@ -11,7 +7,6 @@ export abstract class DomainError extends Error {
   }
 }
 
-/** Entrada que viola o contrato (formato, faixa, campos obrigatórios). */
 export class ValidationError extends DomainError {
   readonly code = "VALIDATION_ERROR";
 
@@ -23,10 +18,6 @@ export class ValidationError extends DomainError {
   }
 }
 
-/**
- * Tentativa de transição a partir de um estado terminal. É erro de programação,
- * não caminho de negócio: se acontecer, há bug no fluxo.
- */
 export class InvalidStateTransitionError extends DomainError {
   readonly code = "INVALID_STATE_TRANSITION";
 
