@@ -1,12 +1,10 @@
 import { type CanActivate, type ExecutionContext, Inject, Injectable, UnauthorizedException } from "@nestjs/common";
 import { Reflector } from "@nestjs/core";
+import type { Response } from "express";
+import { type AuthenticatedRequest, attachIdentity } from "./current-provider.decorator";
 import { IS_PUBLIC } from "./public.decorator";
 import { PROVIDER_IDENTITY_PORT, type ProviderIdentityPort } from "./provider-identity.port";
 
-/**
- * Guard global. Hoje delega para o adapter no-op; trocar o adapter liga a
- * autenticação sem mexer em controllers nem em casos de uso.
- */
 @Injectable()
 export class ProviderAuthGuard implements CanActivate {
   constructor(
@@ -15,19 +13,17 @@ export class ProviderAuthGuard implements CanActivate {
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC, [
-      context.getHandler(),
-      context.getClass(),
-    ]);
+    const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC, [context.getHandler(), context.getClass()]);
     if (isPublic) return true;
 
-    const request = context.switchToHttp().getRequest<{
-      headers: Record<string, string | string[] | undefined>;
-      providerIdentity?: unknown;
-    }>();
+    const http = context.switchToHttp();
+    const request = http.getRequest<AuthenticatedRequest>();
     const identity = await this.identity.resolve(request.headers);
-    if (!identity) throw new UnauthorizedException();
-    request.providerIdentity = identity;
+    if (!identity) {
+      http.getResponse<Response>().setHeader("WWW-Authenticate", 'Bearer realm="wagering-processor"');
+      throw new UnauthorizedException("a valid bearer token is required");
+    }
+    attachIdentity(request, identity);
     return true;
   }
 }
