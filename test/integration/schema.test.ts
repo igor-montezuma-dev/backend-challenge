@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { SQL } from "bun";
-import { createTestDatabase, migrateDown, migrateUp, pgError } from "../support/database";
+import { createTestDatabase, migrateDown, migrateUp, pgError, walletsDivergingFromLedger } from "../support/database";
 
 let db: Awaited<ReturnType<typeof createTestDatabase>>;
 let sql: SQL;
@@ -360,5 +360,27 @@ describe("inbox / outbox", () => {
     await sql`UPDATE outbox_messages SET published_at = now() WHERE id = ${id}`;
     expect((await pgError(() => sql`UPDATE outbox_messages SET published_at = NULL WHERE id = ${id}`)).constraint)
       .toBe("outbox_immutable");
+  });
+});
+
+describe("invariante final dos testes", () => {
+  test("todo banco de teste é conferido ao final: wallet.balance divergente do ledger reprova a suíte", async () => {
+    const probe = await createTestDatabase();
+    await migrateUp(probe.sql);
+    await probe.sql.unsafe(
+      `SET session_replication_role = replica;
+       INSERT INTO wallets (id, player_id, currency, balance, version)
+       VALUES ('${crypto.randomUUID()}', '${crypto.randomUUID()}', 'BRL', 10.00, 1);
+       SET session_replication_role = origin;`,
+    );
+    expect(await walletsDivergingFromLedger(probe.sql)).toEqual([expect.objectContaining({ balance: "10.00", ledger: "0" })]);
+
+    let failure: unknown;
+    try {
+      await probe.drop();
+    } catch (error) {
+      failure = error;
+    }
+    expect(String(failure)).toContain("final invariant violated");
   });
 });

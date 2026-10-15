@@ -24,11 +24,28 @@ export async function createTestDatabase(): Promise<{
     url: url.toString(),
     sql,
     drop: async () => {
+      const divergent = await walletsDivergingFromLedger(sql);
       await sql.close();
       await admin.unsafe(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
       await admin.close();
+      if (divergent.length > 0) {
+        throw new Error(`final invariant violated (wallet.balance != ledger): ${JSON.stringify(divergent)}`);
+      }
     },
   };
+}
+
+export async function walletsDivergingFromLedger(sql: SQL): Promise<{ walletId: string; balance: string; ledger: string }[]> {
+  const [schema] = (await sql`SELECT to_regclass('public.wallets') IS NOT NULL AS ready`) as { ready: boolean }[];
+  if (!schema?.ready) return [];
+  return (await sql`
+    SELECT w.id AS "walletId", w.balance::text AS balance, COALESCE(l.total, 0)::text AS ledger
+      FROM wallets w
+      LEFT JOIN (
+        SELECT wallet_id, SUM(CASE direction WHEN 'CREDIT' THEN amount ELSE -amount END) AS total
+          FROM wallet_ledger_entries GROUP BY wallet_id
+      ) l ON l.wallet_id = w.id
+     WHERE w.balance <> COALESCE(l.total, 0)`) as { walletId: string; balance: string; ledger: string }[];
 }
 
 export async function migrateUp(sql: SQL): Promise<void> {
